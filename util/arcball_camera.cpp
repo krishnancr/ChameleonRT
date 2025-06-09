@@ -50,6 +50,14 @@ void ArcballCamera::zoom(const float zoom_amount)
     translation = glm::translate(motion) * translation;
     update_camera();
 }
+void ArcballCamera::move(const glm::vec3 &movement) {
+    // Transform the movement vector from camera space to world space
+    glm::vec4 world_movement = inv_camera * glm::vec4(movement, 0.0f);
+    
+    // Update both the center of rotation and the camera position
+    center_translation = glm::translate(glm::vec3(world_movement)) * center_translation;
+    update_camera();
+}
 const glm::mat4 &ArcballCamera::transform() const
 {
     return camera;

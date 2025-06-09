@@ -246,8 +246,20 @@ void run_app(const std::vector<std::string> &args,
                               << " -center " << center.x << " " << center.y << " " << center.z
                               << " -up " << up.x << " " << up.y << " " << up.z << " -fov "
                               << fov_y << "\n";
-                } else if (event.key.keysym.sym == SDLK_s) {
+                } else if (event.key.keysym.sym == SDLK_i) {
                     save_image = true;
+                } else if (event.key.keysym.sym == SDLK_s) {
+                    camera.move(glm::vec3(0, 0, -2));
+                    camera_changed = true;
+                } else if (event.key.keysym.sym == SDLK_w) {
+                    camera.move(glm::vec3(0, 0, 2));
+                    camera_changed = true;
+                } else if (event.key.keysym.sym == SDLK_d) {
+                    camera.move(glm::vec3(-2, 0, 0));
+                    camera_changed = true;
+                } else if (event.key.keysym.sym == SDLK_a) {
+                    camera.move(glm::vec3(2, 0, 0));
+                    camera_changed = true;
                 }
             }
             if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE &&
@@ -269,7 +281,7 @@ void run_app(const std::vector<std::string> &args,
                     }
                     prev_mouse = cur_mouse;
                 } else if (event.type == SDL_MOUSEWHEEL) {
-                    camera.zoom(event.wheel.y * 0.1);
+                    camera.zoom(event.wheel.y * 5.0);
                     camera_changed = true;
                 }
             }

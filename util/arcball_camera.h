@@ -36,6 +36,9 @@ public:
 	 * Positive values zoom in, negative will zoom out.
 	 */
 	void zoom(const float zoom_amount);
+	/* Move the camera along its local axes
+	 */
+	void move(const glm::vec3 &movement);
 	// Get the camera transformation matrix
 	const glm::mat4& transform() const;
 	// Get the camera's inverse transformation matrix
