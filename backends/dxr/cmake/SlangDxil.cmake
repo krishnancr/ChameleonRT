@@ -26,23 +26,52 @@ function(add_slang_dxil_embed_library)
     endforeach()
     list(GET SLANG_SRCS 0 MAIN_SHADER)
 
-    # We only compile the main shader, but use the rest to
-    # set the target dependencies properly
-    get_filename_component(FNAME ${MAIN_SHADER} NAME_WE)
-    set(DXIL_EMBED_FILE "${CMAKE_CURRENT_BINARY_DIR}/${FNAME}_embedded_dxil.h")
+# We only compile the main shader, but use the rest to
+# set the target dependencies properly
+get_filename_component(FNAME ${MAIN_SHADER} NAME_WE)
+set(DXIL_BINARY "${CMAKE_CURRENT_BINARY_DIR}/${FNAME}.dxil")
+set(DXIL_EMBED_FILE "${CMAKE_CURRENT_BINARY_DIR}/${FNAME}_embedded_dxil.h")
 
-    # Call slangc compiler to compile the shader to DXIL bytecode and embed it in a header file
-    add_custom_command(OUTPUT ${DXIL_EMBED_FILE}
-        COMMAND ${Slang_COMPILER} ${MAIN_SHADER}
-        -target dxil 
-        -profile lib_6_3
-        -capability dxil_lib
-        -o ${DXIL_EMBED_FILE}
-        -source-embed-style binary-text
-        -source-embed-name ${FNAME}_dxil
-        ${SLANG_INCLUDE_DIRS} ${SLANG_COMPILE_DEFNS} ${SLANG_COMPILE_OPTIONS}
-        DEPENDS ${SLANG_SRCS}
-        COMMENT "Compiling and embedding ${MAIN_SHADER} as ${FNAME}_dxil using Slang")
+# Step 1: Compile Slang to DXIL binary
+# - Use `slangc` to compile .slang source to .dxil binary file
+# - This leverages Slang's superior language features (generics, modules, cross-platform)
+# - Output is raw DXIL bytecode, same as what DXC would produce
+# Step 1: Generate DXIL binary
+add_custom_command(OUTPUT ${DXIL_BINARY}
+    COMMAND ${Slang_COMPILER} ${MAIN_SHADER}
+    -target dxil 
+    -profile lib_6_3
+    -o ${DXIL_BINARY}
+    ${HLSL_INCLUDE_DIRS} ${HLSL_COMPILE_DEFNS} ${DXIL_COMPILE_OPTIONS}
+    DEPENDS ${HLSL_SRCS}
+    COMMENT "Compiling ${MAIN_SHADER} to DXIL with Slang")
+
+# Step 2: Convert DXIL binary to header file
+# Step 2: Convert DXIL binary to C++ header
+# - Read the binary .dxil file and convert bytes to C++ array syntax
+# - Generate the exact same header format that DXC's `-Fh/-Vn` would produce
+# - Use CMake to create: `const unsigned char varname[] = {0x44, 0x58, ...};`
+add_custom_command(OUTPUT ${DXIL_EMBED_FILE}
+    COMMAND ${CMAKE_COMMAND} -E echo "const unsigned char ${FNAME}_dxil[] = {" > ${DXIL_EMBED_FILE}
+    COMMAND ${CMAKE_COMMAND} -DINPUT_FILE=${DXIL_BINARY} -DOUTPUT_FILE=${DXIL_EMBED_FILE} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin_to_header.cmake
+    COMMAND ${CMAKE_COMMAND} -E echo "};" >> ${DXIL_EMBED_FILE}
+    COMMAND ${CMAKE_COMMAND} -E echo "const unsigned int ${FNAME}_dxil_len = sizeof(${FNAME}_dxil);" >> ${DXIL_EMBED_FILE}
+    DEPENDS ${DXIL_BINARY}
+    COMMENT "Converting ${DXIL_BINARY} to header file")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     # This is needed for some reason to get CMake to generate the file properly
     # and not screw up the build, because the original approach of just
