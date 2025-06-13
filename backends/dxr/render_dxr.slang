@@ -1,5 +1,5 @@
 // Ray tracing shader that renders green color for ray hits and blue color for ray misses
-#include "util.hlsl"
+#include "util.slang"
 
 // Raytracing output texture, accessed as a UAV
 RWTexture2D<float4> output : register(u0);

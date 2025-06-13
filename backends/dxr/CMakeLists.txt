@@ -30,7 +30,7 @@ if(DEFINED SLANG_PATH)
     include(${CMAKE_CURRENT_LIST_DIR}/cmake/SlangDxil.cmake)
     
     message(STATUS "Using Slang compiler for DXIL shader compilation")
-    add_slang_dxil_embed_library(dxr_shaders render_dxr.slang
+    add_slang_dxil_embed_library(dxr_shaders render_dxr.slang util.slang
         COMPILE_OPTIONS -O3
         COMPILE_DEFINITIONS
             ${HLSL_COMPILE_DEFNS}
