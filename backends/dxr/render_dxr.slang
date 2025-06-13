@@ -97,9 +97,6 @@ void ShadowMiss(inout OcclusionHitInfo occlusion : SV_RayPayload) {
 
 [shader("closesthit")] 
 void ClosestHit(inout HitInfo payload, Attributes attrib) {
-    // In the simplified shader, we output green for hit geometry
-    payload.color_dist.rgb = float3(0, 1, 0); // Pure green color
-    
     // Record hit distance
     payload.color_dist.w = RayTCurrent();
     
@@ -109,7 +106,44 @@ void ClosestHit(inout HitInfo payload, Attributes attrib) {
     float3 vb = vertices[NonUniformResourceIndex(idx.y)];
     float3 vc = vertices[NonUniformResourceIndex(idx.z)];
     
-    // Compute a simple geometric normal for the hit
-    float3 normal = normalize(cross(vb - va, vc - va));
+    // Calculate barycentric coordinates
+    float3 barycentrics = float3(1.0 - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
+    
+    // Compute the hit position
+    float3 position = va * barycentrics.x + vb * barycentrics.y + vc * barycentrics.z;
+    
+    // Get normal from the normal buffer if available, otherwise compute geometric normal
+    float3 normal;
+    if (normals[NonUniformResourceIndex(idx.x)].x != 0 || 
+        normals[NonUniformResourceIndex(idx.x)].y != 0 || 
+        normals[NonUniformResourceIndex(idx.x)].z != 0) {
+        // Interpolate the normal using barycentric coordinates
+        float3 na = normals[NonUniformResourceIndex(idx.x)];
+        float3 nb = normals[NonUniformResourceIndex(idx.y)];
+        float3 nc = normals[NonUniformResourceIndex(idx.z)];
+        normal = normalize(na * barycentrics.x + nb * barycentrics.y + nc * barycentrics.z);
+    } else {
+        // Compute a geometric normal for the hit
+        normal = normalize(cross(vb - va, vc - va));
+    }
+    
+    // Basic Lambertian shading
+    // Define a simple directional light - coming from above right front
+    float3 lightDir = normalize(float3(1.0, 1.0, 1.0));
+    
+    // Calculate the diffuse component (lambert term)
+    float lambertian = max(dot(normal, lightDir), 0.0);
+    
+    // Add ambient term to avoid completely black surfaces in shadow
+    float ambientIntensity = 0.2;
+    
+    // Base material color (neutral grey for visualization)
+    float3 albedo = float3(0.7, 0.7, 0.7);
+    
+    // Final color combines ambient and diffuse lighting
+    float3 finalColor = albedo * (ambientIntensity + lambertian);
+    
+    // Set the output color and normal
+    payload.color_dist.rgb = finalColor;
     payload.normal = float4(normal, material_id);
 }
