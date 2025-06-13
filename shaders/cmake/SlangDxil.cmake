@@ -53,25 +53,11 @@ add_custom_command(OUTPUT ${DXIL_BINARY}
 # - Use CMake to create: `const unsigned char varname[] = {0x44, 0x58, ...};`
 add_custom_command(OUTPUT ${DXIL_EMBED_FILE}
     COMMAND ${CMAKE_COMMAND} -E echo "const unsigned char ${FNAME}_dxil[] = {" > ${DXIL_EMBED_FILE}
-    COMMAND ${CMAKE_COMMAND} -DINPUT_FILE=${DXIL_BINARY} -DOUTPUT_FILE=${DXIL_EMBED_FILE} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin_to_header.cmake
+    COMMAND ${CMAKE_COMMAND} -DINPUT_FILE=${DXIL_BINARY} -DOUTPUT_FILE=${DXIL_EMBED_FILE} -P ${CMAKE_SOURCE_DIR}/shaders/cmake/bin_to_header.cmake
     COMMAND ${CMAKE_COMMAND} -E echo "};" >> ${DXIL_EMBED_FILE}
     COMMAND ${CMAKE_COMMAND} -E echo "const unsigned int ${FNAME}_dxil_len = sizeof(${FNAME}_dxil);" >> ${DXIL_EMBED_FILE}
     DEPENDS ${DXIL_BINARY}
     COMMENT "Converting ${DXIL_BINARY} to header file")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     # This is needed for some reason to get CMake to generate the file properly
     # and not screw up the build, because the original approach of just

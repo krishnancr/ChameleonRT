@@ -25,6 +25,7 @@ include(CMakeDependentOption)
 
 add_subdirectory(imgui)
 add_subdirectory(util)
+add_subdirectory(shaders)
 add_subdirectory(backends)
 
 option(REPORT_RAY_STATS "Track and report rays/second. May incur a slight rendering performance penalty" OFF)

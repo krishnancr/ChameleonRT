@@ -27,15 +27,17 @@ if(DEFINED SLANG_PATH)
     # Add Slang support
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
     find_package(Slang REQUIRED)
-    include(${CMAKE_CURRENT_LIST_DIR}/cmake/SlangDxil.cmake)
+    include(${CMAKE_SOURCE_DIR}/shaders/cmake/SlangDxil.cmake)
     
     message(STATUS "Using Slang compiler for DXIL shader compilation")
-    add_slang_dxil_embed_library(dxr_shaders render_dxr.slang util.slang
+    add_slang_dxil_embed_library(dxr_shaders 
+        ${PROJECT_SOURCE_DIR}/shaders/render_dxr.slang 
+        ${PROJECT_SOURCE_DIR}/shaders/util.slang
         COMPILE_OPTIONS -O3
         COMPILE_DEFINITIONS
             ${HLSL_COMPILE_DEFNS}
         INCLUDE_DIRECTORIES
-            ${CMAKE_CURRENT_LIST_DIR}
+            ${PROJECT_SOURCE_DIR}/shaders
             ${PROJECT_SOURCE_DIR}
     )
 else()

@@ -1,4 +1,0 @@
-file(READ ${INPUT_FILE} HEX_DATA HEX)
-string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," HEX_DATA ${HEX_DATA})
-string(REGEX REPLACE ",$" "" HEX_DATA ${HEX_DATA})
-file(APPEND ${OUTPUT_FILE} ${HEX_DATA})
