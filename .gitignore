@@ -514,3 +514,5 @@ build/
 cmake-build
 cmake-ninja
 .cache/
+.specstory/*
+.vscode/*
