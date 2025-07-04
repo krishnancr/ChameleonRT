@@ -71,6 +71,22 @@ if(Slang_FOUND)
         IMPORTED_LINK_INTERFACE_LIBRARIES "${Slang_LIBRARIES}"
         INTERFACE_INCLUDE_DIRECTORIES "${Slang_INCLUDE_DIRS}"
     )
+
+    # Also create an imported target for the GFX library
+    find_library(Slang_GFX_LIBRARY
+        NAMES gfx
+        NO_DEFAULT_PATH
+        PATHS "${Slang_LIBRARY_DIR}"
+        DOC "path to slang gfx library files"
+    )
+    
+    if(Slang_GFX_LIBRARY)
+        add_library(Slang::GFX UNKNOWN IMPORTED)
+        set_target_properties(Slang::GFX PROPERTIES
+            IMPORTED_LOCATION ${Slang_GFX_LIBRARY}
+            INTERFACE_INCLUDE_DIRECTORIES "${Slang_INCLUDE_DIRS}"
+        )
+    endif()
 endif()
 
 mark_as_advanced(
