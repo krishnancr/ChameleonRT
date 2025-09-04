@@ -155,18 +155,24 @@ SlangDisplay::~SlangDisplay() {
 #ifdef _WIN32
     // Make sure we wait for any pending GPU work to complete
     if (queue)
+    {
         queue->waitOnHost();
+        Sleep(100);
+    }
+        
         
     // Clear our command buffers
     commandBuffers.clear();
-    
+    transientHeaps.clear();
+
     // Shutdown ImGui DX12 backend
     ImGui_ImplDX12_Shutdown();
+
+    imgui_desc_heap.Reset();
 #endif
 
     // Explicitly clear resources in a controlled order
     framebuffers.clear();
-    transientHeaps.clear();
     swapchain = nullptr;
     framebufferLayout = nullptr;
     queue = nullptr;
