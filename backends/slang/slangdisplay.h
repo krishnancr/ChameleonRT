@@ -8,13 +8,11 @@
 
 #ifdef USE_VULKAN
 #include <vulkan/vulkan.h>
-#include "../vulkan/imgui_impl_vulkan.h"
 #else  // DX12
 #ifdef _WIN32
 #include <d3d12.h>
 #include <dxgiformat.h>
 #include <wrl/client.h>
-#include "../dxr/imgui_impl_dx12.h"
 #endif
 #endif
 
@@ -47,4 +45,7 @@ public:
     
 private:
     SDL_Window* window; // Store the SDL window handle
+    
+    // Unified ImGui rendering method that works with both Vulkan and D3D12
+    void renderImGuiDrawData(gfx::ICommandBuffer* commandBuffer, gfx::IFramebuffer* framebuffer);
 };

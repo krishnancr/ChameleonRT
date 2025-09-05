@@ -11,17 +11,7 @@ set(CRT_SLANG_SOURCES
     render_slang_plugin.cpp
 )
 
-# Add conditional ImGui implementations based on USE_VULKAN define
-if(DEFINED USE_VULKAN AND USE_VULKAN)
-    list(APPEND CRT_SLANG_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan/imgui_impl_vulkan.cpp
-    )
-else()
-    # Only include DX12 implementation for non-Vulkan builds
-    list(APPEND CRT_SLANG_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/../dxr/imgui_impl_dx12.cpp
-    )
-endif()
+# Note: ImGui backend implementations removed - using unified Slang GFX rendering
 
 add_library(crt_slang MODULE ${CRT_SLANG_SOURCES})
 

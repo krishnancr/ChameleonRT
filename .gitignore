@@ -510,7 +510,7 @@ FodyWeavers.xsd
 ### ChameleonRT specific filters
 *.swp
 *.raw
-build/
+build*
 cmake-build
 cmake-ninja
 .cache/

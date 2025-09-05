@@ -1,12 +1,15 @@
 # Build script for ChameleonRT with proper paths to SDL2 and Slang
 # PowerShell script
 # Usage: 
-#   .\clean_rebuild.ps1 -Clean     # Clean rebuild (default)
-#   .\clean_rebuild.ps1 -Build     # Simple build only
+#   .\clean_rebuild.ps1 -Clean                    # Clean rebuild D3D12 (default)
+#   .\clean_rebuild.ps1 -Build                    # Simple build only
+#   .\clean_rebuild.ps1 -Clean -UseVulkan         # Clean rebuild Vulkan
+#   .\clean_rebuild.ps1 -Build -UseVulkan         # Simple build Vulkan
 
 param(
     [switch]$Clean,
-    [switch]$Build
+    [switch]$Build,
+    [switch]$UseVulkan
 )
 
 # Default to clean rebuild if no parameter is specified
@@ -32,10 +35,21 @@ Write-Host "Set proxy environment variables" -ForegroundColor Cyan
 $SLANG_PATH = "C:\dev\slang\build\RelWithDebInfo"
 $SDL2_PATH = "C:\dev\SDL2\cmake"
 $PROJECT_ROOT = "C:\dev\ChameleonRT"
-$BUILD_DIR = "$PROJECT_ROOT\build"
+
+# Choose build directory and Vulkan flag based on backend
+if ($UseVulkan) {
+    $BUILD_DIR = "$PROJECT_ROOT\build_vulkan"
+    $VULKAN_FLAG = "ON"
+    $BACKEND_NAME = "Vulkan"
+} else {
+    $BUILD_DIR = "$PROJECT_ROOT\build"
+    $VULKAN_FLAG = "OFF"
+    $BACKEND_NAME = "D3D12"
+}
 
 Write-Host "Using Slang path: $SLANG_PATH" -ForegroundColor Cyan
 Write-Host "Using SDL2 path: $SDL2_PATH" -ForegroundColor Cyan
+Write-Host "Building for backend: $BACKEND_NAME" -ForegroundColor Cyan
 
 if ($Clean) {
     # Remove old build directory if it exists
@@ -52,7 +66,7 @@ if ($Clean) {
     Write-Host "Configuring CMake..." -ForegroundColor Yellow
     Set-Location $PROJECT_ROOT
     Write-Host "Running CMake configure command..." -ForegroundColor Yellow
-    $cmakeCommand = "cmake -B build `"-DSlang_ROOT=$SLANG_PATH`" `"-DENABLE_SLANG=ON`" `"-DSDL2_DIR=$SDL2_PATH`" -DCMAKE_BUILD_TYPE=Debug -DUSE_VULKAN=OFF ."
+    $cmakeCommand = "cmake -B $(Split-Path $BUILD_DIR -Leaf) `"-DSlang_ROOT=$SLANG_PATH`" `"-DENABLE_SLANG=ON`" `"-DSDL2_DIR=$SDL2_PATH`" -DCMAKE_BUILD_TYPE=Debug -DUSE_VULKAN=$VULKAN_FLAG ."
     Write-Host $cmakeCommand -ForegroundColor Gray
     Invoke-Expression $cmakeCommand
 } else {
@@ -66,12 +80,11 @@ if ($Clean) {
 
 # Build the project
 Write-Host "Building project..." -ForegroundColor Yellow
-cd build
-cmake --build . --config Debug
+cmake --build $BUILD_DIR --config Debug
 
 Pop-Location
 if ($Clean) {
-    Write-Host "Clean rebuild completed!" -ForegroundColor Green
+    Write-Host "Clean rebuild completed for $BACKEND_NAME!" -ForegroundColor Green
 } else {
-    Write-Host "Build completed!" -ForegroundColor Green
+    Write-Host "Build completed for $BACKEND_NAME!" -ForegroundColor Green
 }
