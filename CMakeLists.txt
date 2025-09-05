@@ -41,7 +41,7 @@ option(REPORT_RAY_STATS "Track and report rays/second. May incur a slight render
 add_executable(chameleonrt main.cpp)
 
 set_target_properties(chameleonrt PROPERTIES
-	CXX_STANDARD 14
+	CXX_STANDARD 17
 	CXX_STANDARD_REQUIRED ON)
 
 target_link_libraries(chameleonrt PUBLIC

@@ -52,7 +52,7 @@ if ($Clean) {
     Write-Host "Configuring CMake..." -ForegroundColor Yellow
     Set-Location $PROJECT_ROOT
     Write-Host "Running CMake configure command..." -ForegroundColor Yellow
-    $cmakeCommand = "cmake -B build `"-DSlang_ROOT=$SLANG_PATH`" `"-DENABLE_SLANG=ON`" `"-DSDL2_DIR=$SDL2_PATH`" -DCMAKE_BUILD_TYPE=Debug -DENABLE_DXR=ON ."
+    $cmakeCommand = "cmake -B build `"-DSlang_ROOT=$SLANG_PATH`" `"-DENABLE_SLANG=ON`" `"-DSDL2_DIR=$SDL2_PATH`" -DCMAKE_BUILD_TYPE=Debug -DUSE_VULKAN=OFF ."
     Write-Host $cmakeCommand -ForegroundColor Gray
     Invoke-Expression $cmakeCommand
 } else {

@@ -9,14 +9,27 @@ set(CRT_SLANG_SOURCES
     slangdisplay.cpp
     slangdisplay.h
     render_slang_plugin.cpp
-    # Only include one copy of the ImGui DX12 implementation
-    # Use the one from the DXR backend
-    ${CMAKE_CURRENT_SOURCE_DIR}/../dxr/imgui_impl_dx12.cpp
 )
+
+# Add conditional ImGui implementations based on USE_VULKAN define
+if(DEFINED USE_VULKAN AND USE_VULKAN)
+    list(APPEND CRT_SLANG_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan/imgui_impl_vulkan.cpp
+    )
+else()
+    # Only include DX12 implementation for non-Vulkan builds
+    list(APPEND CRT_SLANG_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/../dxr/imgui_impl_dx12.cpp
+    )
+endif()
 
 add_library(crt_slang MODULE ${CRT_SLANG_SOURCES})
 
-set_target_properties(crt_slang PROPERTIES OUTPUT_NAME "crt_slang")
+set_target_properties(crt_slang PROPERTIES 
+    OUTPUT_NAME "crt_slang"
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
 
 target_include_directories(crt_slang
     PRIVATE
@@ -30,9 +43,24 @@ target_link_libraries(crt_slang PRIVATE util display Slang::Slang)
 # Link to the GFX library which provides gfxCreateDevice
 target_link_libraries(crt_slang PRIVATE Slang::GFX)
 
-# Add D3D12 dependencies for Windows
-if(WIN32)
-    target_link_libraries(crt_slang PRIVATE d3d12.lib)
+# Add conditional dependencies based on USE_VULKAN define
+if(DEFINED USE_VULKAN AND USE_VULKAN)
+    # Add Vulkan dependencies
+    find_package(Vulkan REQUIRED)
+    target_link_libraries(crt_slang PRIVATE ${Vulkan_LIBRARIES})
+    target_include_directories(crt_slang PRIVATE ${Vulkan_INCLUDE_DIRS})
+    target_compile_definitions(crt_slang PRIVATE USE_VULKAN)
+    
+    # Add platform-specific dependencies for Vulkan
+    if(UNIX AND NOT APPLE)
+        # Linux specific libraries for Vulkan
+        target_link_libraries(crt_slang PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+else()
+    # Add D3D12 dependencies for Windows (default behavior)
+    if(WIN32)
+        target_link_libraries(crt_slang PRIVATE d3d12.lib)
+    endif()
 endif()
 
 # Only copy dependencies to the main build output directory (e.g., build/Debug)
