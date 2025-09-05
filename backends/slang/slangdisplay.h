@@ -27,11 +27,19 @@ public:
     void new_frame() override;
     void display(RenderBackend* backend) override;
 
+    // Resource access methods for RenderSlang
+    gfx::IDevice* getDevice() { return device.get(); }
+    gfx::ICommandBuffer* getCurrentCommandBuffer();
+    gfx::IFramebuffer* getCurrentFramebuffer();
+    gfx::IFramebufferLayout* getFramebufferLayout() { return framebufferLayout.get(); }
+    uint32_t getCurrentFrameIndex() const { return m_currentFrameIndex; }
+
     Slang::ComPtr<gfx::IDevice> device;
     Slang::ComPtr<gfx::ICommandQueue> queue;
     Slang::ComPtr<gfx::ISwapchain> swapchain;
     Slang::ComPtr<gfx::IFramebufferLayout> framebufferLayout;
     std::vector<Slang::ComPtr<gfx::IFramebuffer>> framebuffers;
+    std::vector<Slang::ComPtr<gfx::IResourceView>> renderTargetViews; // Store RTVs for clearing
     std::vector<Slang::ComPtr<gfx::ITransientResourceHeap>> transientHeaps;
     std::vector<Slang::ComPtr<gfx::ICommandBuffer>> commandBuffers; // Added command buffer storage
 
@@ -45,6 +53,7 @@ public:
     
 private:
     SDL_Window* window; // Store the SDL window handle
+    uint32_t m_currentFrameIndex = 0;  // Track current frame for resource access
     
     // Unified ImGui rendering method that works with both Vulkan and D3D12
     void renderImGuiDrawData(gfx::ICommandBuffer* commandBuffer, gfx::IFramebuffer* framebuffer);

@@ -23,8 +23,11 @@ std::unique_ptr<Display> make_display(SDL_Window* window)
 std::unique_ptr<RenderBackend> make_renderer(Display* display)
 {
     auto* slang_display = dynamic_cast<SlangDisplay*>(display);
-    if (slang_display && slang_display->device) {
-        return std::make_unique<RenderSlang>(slang_display->device);
+    if (slang_display) {
+        auto renderer = std::make_unique<RenderSlang>();
+        // Set the display reference so the renderer can access framebuffer resources
+        renderer->set_display(slang_display);
+        return renderer;
     }
     return nullptr;
 }

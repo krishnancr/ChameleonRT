@@ -9,6 +9,7 @@ set(CRT_SLANG_SOURCES
     slangdisplay.cpp
     slangdisplay.h
     render_slang_plugin.cpp
+    render_slang_flat.slang
 )
 
 # Note: ImGui backend implementations removed - using unified Slang GFX rendering
@@ -82,3 +83,11 @@ foreach(DEP ${SLANG_DEPENDENCIES})
         COMMENT "Copying ${DEP} to main build output directory"
     )
 endforeach()
+
+# Copy the shader file to the output directory so it can be found at runtime
+add_custom_command(TARGET crt_slang POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/render_slang_flat.slang"
+        "${FINAL_OUTPUT_DIR}/render_slang_flat.slang"
+    COMMENT "Copying shader file to output directory"
+)
