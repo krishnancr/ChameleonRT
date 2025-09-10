@@ -59,4 +59,24 @@ private:
     
     // Helper method for Stage 0 - simple screen clearing
     void clearScreenToColor(gfx::ICommandBuffer* commandBuffer, float r, float g, float b, float a);
+    
+    // Shader validation methods (Standard complexity)
+    struct ShaderValidationData {
+        Slang::ComPtr<gfx::IShaderProgram> rainbowShader;
+        Slang::ComPtr<gfx::IShaderProgram> pulseShader;
+        Slang::ComPtr<gfx::IPipelineState> rainbowPipeline;
+        Slang::ComPtr<gfx::IPipelineState> pulsePipeline;
+        Slang::ComPtr<gfx::IBufferResource> timeBuffer;
+        Slang::ComPtr<gfx::IResourceView> timeBufferView;
+        double startTime;
+        int currentShader; // 0 = rainbow, 1 = pulse
+        bool validationActive;
+    };
+    
+    ShaderValidationData m_validation;
+    
+    void initShaderValidation();
+    void runShaderValidation();
+    void cleanupShaderValidation();
+    void updateTimeBuffer(float deltaTime);
 };

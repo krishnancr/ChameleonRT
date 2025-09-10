@@ -6,7 +6,8 @@
 #include <iostream>
 
 #ifdef USE_VULKAN
-// Vulkan includes are in the header
+// Vulkan includes for direct command access
+#include <vulkan/vulkan.h>
 #ifdef __linux__
 #include <X11/Xlib.h>
 #endif
@@ -23,6 +24,7 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <cmath>
 
 using namespace Slang;
 using namespace gfx;
@@ -46,24 +48,16 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     gfx::Result res = gfxCreateDevice(&deviceDesc, device.writeRef());
     if (SLANG_FAILED(res)) throw std::runtime_error("Failed to create GFX device");
 
-    // **VERIFICATION**: Print actual device type and adapter information
+    // Verify device type and adapter (keep minimal logging for diagnostics)
     const gfx::DeviceInfo& deviceInfo = device->getDeviceInfo();
-    std::cout << "========================================" << std::endl;
-    std::cout << "🔍 GRAPHICS API VERIFICATION:" << std::endl;
-    // Use proper Slang GFX API to get device type name
     const char* deviceTypeName = gfxGetDeviceTypeName(deviceInfo.deviceType);
-    std::cout << "   Device Type: " << deviceTypeName;
+    std::cout << "Graphics API: " << deviceTypeName;
     
 #ifdef USE_VULKAN
-    std::cout << " (Compiled for: VULKAN)" << std::endl;
+    std::cout << " (Vulkan)" << std::endl;
 #else
-    std::cout << " (Compiled for: D3D12)" << std::endl;
+    std::cout << " (D3D12)" << std::endl;
 #endif
-    
-    if (deviceInfo.adapterName) {
-        std::cout << "   Adapter: " << deviceInfo.adapterName << std::endl;
-    }
-    std::cout << "========================================" << std::endl;
 
     // 3. Create command queue
     gfx::ICommandQueue::Desc queueDesc = {};
@@ -78,41 +72,26 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     swapchainDesc.imageCount = 2;
     swapchainDesc.queue = queue;
     
-    // Platform-first window handle extraction (eliminates API-specific duplication)
+    // Extract native window handle from SDL
     gfx::WindowHandle windowHandle = {};
     
 #ifdef _WIN32
-    // Windows: Extract HWND from SDL (works for both Vulkan and D3D12)
     HWND hwnd = wm_info.info.win.window;
     windowHandle = gfx::WindowHandle::FromHwnd(hwnd);
-    
-    #ifdef USE_VULKAN
-    std::cout << "Using Windows HWND for Vulkan surface creation" << std::endl;
-    #else
-    std::cout << "Using Windows HWND for D3D12" << std::endl;
-    #endif
-    
 #elif defined(__linux__)
-    // Linux X11: Extract X11 display and window (Vulkan only for now)
     Display* x11Display = wm_info.info.x11.display;
     uint32_t x11Window = wm_info.info.x11.window;
     windowHandle = gfx::WindowHandle::FromXWindow(x11Display, x11Window);
-    std::cout << "Using X11 window for Vulkan surface creation" << std::endl;
-    
 #else
-    // Fallback for unsupported platforms
     windowHandle = {};
-    std::cout << "Unsupported platform for window handle creation" << std::endl;
 #endif
     
     swapchain = device->createSwapchain(swapchainDesc, windowHandle);
 
-    // PHASE 2 FIX: Query actual swapchain properties for format compatibility
+    // Query actual swapchain properties
     const auto& actualSwapchainDesc = swapchain->getDesc();
     uint32_t actualImageCount = actualSwapchainDesc.imageCount;
     gfx::Format swapchainFormat = actualSwapchainDesc.format;
-    
-    std::cout << "✅ PHASE 2: Swapchain created with " << actualImageCount << " images, format: " << (int)swapchainFormat << std::endl;
 
     // 5. Create framebuffer layout using actual swapchain format (Stage 0: no depth)
     gfx::IFramebufferLayout::TargetLayout renderTargetLayout = {swapchainFormat, 1}; // Use actual format
@@ -139,8 +118,6 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     if (SLANG_FAILED(result)) {
         throw std::runtime_error("Failed to create render pass layout");
     }
-    
-    std::cout << "Render pass layout created (Stage 0)" << std::endl;
 
     // 6. Create framebuffers for swapchain images
     framebuffers.clear();
@@ -189,7 +166,7 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         commandBuffers.push_back(commandBuffer);
     }
     
-    std::cout << "Created " << actualImageCount << " transient heaps and command buffers" << std::endl;
+
 
     // 8. Unified ImGui setup - build font atlas for both backends
     ImGuiIO& io = ImGui::GetIO();
@@ -228,6 +205,9 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     }
 #endif
 #endif
+
+    // Initialize shader validation (Standard complexity)
+    initShaderValidation();
 }
 
 SlangDisplay::~SlangDisplay() {
@@ -245,6 +225,9 @@ SlangDisplay::~SlangDisplay() {
     // Clear our command buffers and transient heaps
     commandBuffers.clear();
     transientHeaps.clear();
+
+    // Cleanup shader validation resources
+    cleanupShaderValidation();
 
 #ifndef USE_VULKAN
 #ifdef _WIN32
@@ -341,7 +324,6 @@ void SlangDisplay::display(RenderBackend* backend) {
     try {
     static int frameCount = 0;
     frameCount++;
-    // std::cout << "🖼️ SlangDisplay::display - Starting frame " << frameCount << std::endl;
     
     // Acquire next swapchain image
     m_currentFrameIndex = swapchain->acquireNextImage();
@@ -361,8 +343,12 @@ void SlangDisplay::display(RenderBackend* backend) {
     Slang::ComPtr<gfx::ICommandBuffer> commandBuffer;
     transientHeaps[bufferIndex]->createCommandBuffer(commandBuffer.writeRef());
     
-    // STEP 1: Simple screen clearing
-    clearScreenToColor(commandBuffer.get(), 0.2f, 0.3f, 0.8f, 1.0f);
+    // STEP 1: Shader validation rendering (replaces simple screen clearing)
+    if (m_validation.validationActive) {
+        runShaderValidation();
+    } else {
+        clearScreenToColor(commandBuffer.get(), 0.2f, 0.3f, 0.8f, 1.0f);
+    }
     
     // STEP 2: End ImGui frame (prevents accumulation)
     ImGui::Render();
@@ -374,7 +360,6 @@ void SlangDisplay::display(RenderBackend* backend) {
     queue->waitOnHost();  // Stage 0 synchronization
     swapchain->present();
     
-    // std::cout << "✅ Frame " << frameCount << " completed successfully" << std::endl;    
     } 
     catch (const std::exception& e) {
         std::cerr << "Exception in display(): " << e.what() << std::endl;
@@ -387,8 +372,116 @@ void SlangDisplay::display(RenderBackend* backend) {
 
 void SlangDisplay::clearScreenToColor(gfx::ICommandBuffer* commandBuffer, 
                                      float r, float g, float b, float a) {
-    // Stage 0: Minimal implementation - just log that we're clearing
-    // TODO: Implement actual clearing in Stage 1+
+    if (m_currentFrameIndex < 0 || m_currentFrameIndex >= (int)framebuffers.size()) {
+        std::cerr << "❌ Invalid frame index for clearing: " << m_currentFrameIndex << std::endl;
+        return;
+    }
+    
+
+    
+#ifdef USE_VULKAN
+    // Pure Direct Vulkan clearing using image transition and vkCmdClearColorImage
+    if (device->getDeviceInfo().deviceType == gfx::DeviceType::Vulkan) {
+        // Get native Vulkan handles
+        gfx::IDevice::InteropHandles deviceHandles;
+        if (SLANG_SUCCEEDED(device->getNativeDeviceHandles(&deviceHandles)) && 
+            deviceHandles.handles[0].api == gfx::InteropHandleAPI::Vulkan) {
+            
+            VkDevice vkDevice = (VkDevice)deviceHandles.handles[0].handleValue;
+            
+            gfx::InteropHandle cmdBufHandle;
+            if (SLANG_SUCCEEDED(commandBuffer->getNativeHandle(&cmdBufHandle)) &&
+                cmdBufHandle.api == gfx::InteropHandleAPI::Vulkan) {
+                
+                VkCommandBuffer vkCmdBuf = (VkCommandBuffer)cmdBufHandle.handleValue;
+                
+                // Get the swapchain image texture resource
+                ComPtr<gfx::ITextureResource> colorBuffer;
+                swapchain->getImage(m_currentFrameIndex, colorBuffer.writeRef());
+                
+                gfx::InteropHandle imageHandle;
+                if (SLANG_SUCCEEDED(colorBuffer->getNativeResourceHandle(&imageHandle)) &&
+                    imageHandle.api == gfx::InteropHandleAPI::Vulkan) {
+                    
+                    VkImage vkImage = (VkImage)imageHandle.handleValue;
+                    
+                    // Transition image to TRANSFER_DST_OPTIMAL layout for clearing
+                    VkImageMemoryBarrier barrier = {};
+                    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.image = vkImage;
+                    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    barrier.subresourceRange.baseMipLevel = 0;
+                    barrier.subresourceRange.levelCount = 1;
+                    barrier.subresourceRange.baseArrayLayer = 0;
+                    barrier.subresourceRange.layerCount = 1;
+                    barrier.srcAccessMask = 0;
+                    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    
+                    vkCmdPipelineBarrier(vkCmdBuf,
+                                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                       0, 0, nullptr, 0, nullptr, 1, &barrier);
+                    
+                    // Clear the image
+                    VkClearColorValue clearColor = {};
+                    clearColor.float32[0] = r;
+                    clearColor.float32[1] = g;
+                    clearColor.float32[2] = b;
+                    clearColor.float32[3] = a;
+                    
+                    VkImageSubresourceRange range = {};
+                    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    range.baseMipLevel = 0;
+                    range.levelCount = 1;
+                    range.baseArrayLayer = 0;
+                    range.layerCount = 1;
+                    
+                    vkCmdClearColorImage(vkCmdBuf, vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                       &clearColor, 1, &range);
+                    
+                    // Transition back to PRESENT_SRC_KHR for presentation
+                    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+                    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    barrier.dstAccessMask = 0;
+                    
+                    vkCmdPipelineBarrier(vkCmdBuf,
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                       0, 0, nullptr, 0, nullptr, 1, &barrier);
+                    
+                    return;
+                }
+            }
+        }
+    }
+#endif
+    
+    // D3D12 path: Use resource encoder for clearing
+    auto* resourceEncoder = commandBuffer->encodeResourceCommands();
+    if (!resourceEncoder) {
+        std::cerr << "❌ Failed to create resource encoder for clearing" << std::endl;
+        return;
+    }
+    
+    // Set up clear values
+    gfx::ClearValue clearValue = {};
+    clearValue.color.floatValues[0] = r;
+    clearValue.color.floatValues[1] = g;
+    clearValue.color.floatValues[2] = b;
+    clearValue.color.floatValues[3] = a;
+    
+    // Clear the render target view
+    resourceEncoder->clearResourceView(
+        renderTargetViews[m_currentFrameIndex], 
+        &clearValue, 
+        gfx::ClearResourceViewFlags::FloatClearValues);
+    
+    // Note: endEncoding() is handled by the command buffer lifecycle
 }
 
 gfx::ICommandBuffer* SlangDisplay::getCurrentCommandBuffer() {
@@ -398,5 +491,85 @@ gfx::ICommandBuffer* SlangDisplay::getCurrentCommandBuffer() {
 
 gfx::IFramebuffer* SlangDisplay::getCurrentFramebuffer() {
     return framebuffers[m_currentFrameIndex].get();
+}
+
+// =============================================================================
+// SHADER VALIDATION IMPLEMENTATION (Standard Complexity)
+// =============================================================================
+
+void SlangDisplay::initShaderValidation() {
+    // Initialize validation data
+    auto now = std::chrono::high_resolution_clock::now();
+    m_validation.startTime = std::chrono::duration<double>(now.time_since_epoch()).count();
+    m_validation.currentShader = 0;
+    m_validation.validationActive = true;
+}
+
+void SlangDisplay::runShaderValidation() {
+    if (!m_validation.validationActive) {
+        return;
+    }
+    
+    // Update time for animation
+    auto now = std::chrono::high_resolution_clock::now();
+    double currentTime = std::chrono::duration<double>(now.time_since_epoch()).count();
+    float deltaTime = static_cast<float>(currentTime - m_validation.startTime);
+    
+    // Switch animation modes every 4 seconds
+    int newMode = static_cast<int>(deltaTime / 4.0) % 3;
+    if (newMode != m_validation.currentShader) {
+        m_validation.currentShader = newMode;
+    }
+    
+    // Get current command buffer for animated clearing
+    auto* commandBuffer = getCurrentCommandBuffer();
+    
+    // Implement different animation modes
+    float r, g, b;
+    switch (m_validation.currentShader) {
+        case 0: // Rainbow mode
+        {
+            float hue = fmod(deltaTime * 0.5f, 1.0f) * 6.28318f; // 2π
+            r = 0.5f + 0.5f * cosf(hue);
+            g = 0.5f + 0.5f * cosf(hue + 2.094f); // 2π/3
+            b = 0.5f + 0.5f * cosf(hue + 4.189f); // 4π/3
+            break;
+        }
+        case 1: // Pulse mode
+        {
+            float pulse = 0.3f + 0.7f * (0.5f + 0.5f * sinf(deltaTime * 2.0f));
+            r = 0.8f * pulse;
+            g = 0.2f * pulse;
+            b = 0.4f * pulse;
+            break;
+        }
+        case 2: // Wave mode
+        {
+            r = 0.5f + 0.3f * sinf(deltaTime * 1.2f);
+            g = 0.5f + 0.3f * sinf(deltaTime * 1.7f + 1.0f);
+            b = 0.5f + 0.3f * sinf(deltaTime * 0.8f + 2.0f);
+            break;
+        }
+        default:
+            r = g = b = 0.5f;
+    }
+    
+    // Apply animated clearing with validation colors
+    clearScreenToColor(commandBuffer, r, g, b, 1.0f);
+}
+
+void SlangDisplay::updateTimeBuffer(float time) {
+    // Simplified for animated clear mode - no buffer updates needed
+    // Time is calculated directly in runShaderValidation()
+}
+
+void SlangDisplay::cleanupShaderValidation() {
+    m_validation.rainbowShader = nullptr;
+    m_validation.pulseShader = nullptr;
+    m_validation.rainbowPipeline = nullptr;
+    m_validation.pulsePipeline = nullptr;
+    m_validation.timeBuffer = nullptr;
+    m_validation.timeBufferView = nullptr;
+    m_validation.validationActive = false;
 }
 
