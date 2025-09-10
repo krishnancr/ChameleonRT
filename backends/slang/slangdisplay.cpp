@@ -50,14 +50,9 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     const gfx::DeviceInfo& deviceInfo = device->getDeviceInfo();
     std::cout << "========================================" << std::endl;
     std::cout << "🔍 GRAPHICS API VERIFICATION:" << std::endl;
-    std::cout << "   Device Type: ";
-    
-    switch(deviceInfo.deviceType) {
-        case (gfx::DeviceType)1: std::cout << "D3D11"; break;  // Hardcoded value
-        case (gfx::DeviceType)2: std::cout << "D3D12 ✅"; break;  // Hardcoded value  
-        case (gfx::DeviceType)4: std::cout << "Vulkan ✅"; break;  // Hardcoded value
-        default: std::cout << "Unknown (" << (int)deviceInfo.deviceType << ")"; break;
-    }
+    // Use proper Slang GFX API to get device type name
+    const char* deviceTypeName = gfxGetDeviceTypeName(deviceInfo.deviceType);
+    std::cout << "   Device Type: " << deviceTypeName;
     
 #ifdef USE_VULKAN
     std::cout << " (Compiled for: VULKAN)" << std::endl;
@@ -68,7 +63,6 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     if (deviceInfo.adapterName) {
         std::cout << "   Adapter: " << deviceInfo.adapterName << std::endl;
     }
-    // std::cout << "   API Version: " << deviceInfo.apiVersion << std::endl;  // This field doesn't exist
     std::cout << "========================================" << std::endl;
 
     // 3. Create command queue
@@ -76,7 +70,6 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     queueDesc.type = gfx::ICommandQueue::QueueType::Graphics;
     queue = device->createCommandQueue(queueDesc);
 
-    // 4. PHASE 2 FIX: Create swapchain first to determine format
     // We need to know the swapchain format before creating framebuffer layout
     gfx::ISwapchain::Desc swapchainDesc = {};
     swapchainDesc.format = gfx::Format::R8G8B8A8_UNORM;
@@ -85,35 +78,31 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     swapchainDesc.imageCount = 2;
     swapchainDesc.queue = queue;
     
-    
-#ifdef USE_VULKAN
-    // PHASE 1 FIX: Extract proper native window handle for Vulkan
-    // Slang GFX will create the Vulkan surface internally from the window handle
-    
-    #ifdef _WIN32
-    // Windows: Extract HWND from SDL
-    HWND hwnd = wm_info.info.win.window;
-    gfx::WindowHandle windowHandle = gfx::WindowHandle::FromHwnd(hwnd);
-    std::cout << "✅ PHASE 1: Using Windows HWND for Vulkan surface creation" << std::endl;
-    
-    #elif defined(__linux__)
-    // Linux X11: Extract X11 display and window  
-    Display* x11Display = wm_info.info.x11.display;
-    uint32_t x11Window = wm_info.info.x11.window;
-    gfx::WindowHandle windowHandle = gfx::WindowHandle::FromXWindow(x11Display, x11Window);
-    std::cout << "✅ PHASE 1: Using X11 window for Vulkan surface creation" << std::endl;
-    
-    #else
-    // Fallback for unsupported platforms
+    // Platform-first window handle extraction (eliminates API-specific duplication)
     gfx::WindowHandle windowHandle = {};
-    std::cout << "⚠️  PHASE 1: Unsupported platform for Vulkan window handle" << std::endl;
+    
+#ifdef _WIN32
+    // Windows: Extract HWND from SDL (works for both Vulkan and D3D12)
+    HWND hwnd = wm_info.info.win.window;
+    windowHandle = gfx::WindowHandle::FromHwnd(hwnd);
+    
+    #ifdef USE_VULKAN
+    std::cout << "Using Windows HWND for Vulkan surface creation" << std::endl;
+    #else
+    std::cout << "Using Windows HWND for D3D12" << std::endl;
     #endif
     
-#else  // DX12
-    // Extract HWND for D3D12
-    HWND hwnd = wm_info.info.win.window;
-    gfx::WindowHandle windowHandle = gfx::WindowHandle::FromHwnd(hwnd);
-    std::cout << "✅ PHASE 1: Using Windows HWND for D3D12" << std::endl;
+#elif defined(__linux__)
+    // Linux X11: Extract X11 display and window (Vulkan only for now)
+    Display* x11Display = wm_info.info.x11.display;
+    uint32_t x11Window = wm_info.info.x11.window;
+    windowHandle = gfx::WindowHandle::FromXWindow(x11Display, x11Window);
+    std::cout << "Using X11 window for Vulkan surface creation" << std::endl;
+    
+#else
+    // Fallback for unsupported platforms
+    windowHandle = {};
+    std::cout << "Unsupported platform for window handle creation" << std::endl;
 #endif
     
     swapchain = device->createSwapchain(swapchainDesc, windowHandle);
@@ -125,39 +114,33 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     
     std::cout << "✅ PHASE 2: Swapchain created with " << actualImageCount << " images, format: " << (int)swapchainFormat << std::endl;
 
-    // 5. Create framebuffer layout using actual swapchain format
+    // 5. Create framebuffer layout using actual swapchain format (Stage 0: no depth)
     gfx::IFramebufferLayout::TargetLayout renderTargetLayout = {swapchainFormat, 1}; // Use actual format
-    gfx::IFramebufferLayout::TargetLayout depthLayout = {gfx::Format::D32_FLOAT, 1};
     gfx::IFramebufferLayout::Desc framebufferLayoutDesc = {};
     framebufferLayoutDesc.renderTargetCount = 1;
     framebufferLayoutDesc.renderTargets = &renderTargetLayout;
-    framebufferLayoutDesc.depthStencil = &depthLayout;
+    framebufferLayoutDesc.depthStencil = nullptr; // Stage 0: No depth buffer
     device->createFramebufferLayout(framebufferLayoutDesc, framebufferLayout.writeRef());
 
-#ifdef USE_VULKAN
     // 5.1. Create render pass layout for Vulkan (required for proper command buffer encoding)
     gfx::IRenderPassLayout::Desc renderPassLayoutDesc = {};
     renderPassLayoutDesc.framebufferLayout = framebufferLayout;
     renderPassLayoutDesc.renderTargetCount = 1;
     gfx::IRenderPassLayout::TargetAccessDesc renderTargetAccess = {};
-    renderTargetAccess.loadOp = gfx::IRenderPassLayout::TargetLoadOp::Clear;  // Clear for fresh frame
-    renderTargetAccess.storeOp = gfx::IRenderPassLayout::TargetStoreOp::Store;
-    // FIX: Use proper swapchain image initial state - should be Present or ColorAttachment, not Undefined
-    renderTargetAccess.initialState = gfx::ResourceState::Present;     // Swapchain images come from Present state
-    renderTargetAccess.finalState = gfx::ResourceState::Present;      // Return to Present state for swapchain
+    renderTargetAccess.loadOp = gfx::IRenderPassLayout::TargetLoadOp::Clear;  // Clear on load
+    renderTargetAccess.storeOp = gfx::IRenderPassLayout::TargetStoreOp::Store; // Store result
+    renderTargetAccess.initialState = gfx::ResourceState::Undefined;           // First use
+    renderTargetAccess.finalState = gfx::ResourceState::Present;               // For presentation
+    
     renderPassLayoutDesc.renderTargetAccess = &renderTargetAccess;
+    renderPassLayoutDesc.depthStencilAccess = nullptr; // No depth buffer for Stage 0
     
-    gfx::IRenderPassLayout::TargetAccessDesc depthAccess = {};
-    depthAccess.loadOp = gfx::IRenderPassLayout::TargetLoadOp::Clear;  // Clear depth
-    depthAccess.storeOp = gfx::IRenderPassLayout::TargetStoreOp::Store;
-    depthAccess.initialState = gfx::ResourceState::Undefined;  // Depth buffer can start from undefined
-    depthAccess.finalState = gfx::ResourceState::DepthWrite;   // End in depth write state
-    renderPassLayoutDesc.depthStencilAccess = &depthAccess;
+    auto result = device->createRenderPassLayout(renderPassLayoutDesc, renderPassLayout.writeRef());
+    if (SLANG_FAILED(result)) {
+        throw std::runtime_error("Failed to create render pass layout");
+    }
     
-    device->createRenderPassLayout(renderPassLayoutDesc, renderPassLayout.writeRef());
-    
-    std::cout << "✅ PHASE 2.1: Render pass layout created with corrected image states (Present->Present)" << std::endl;
-#endif
+    std::cout << "Render pass layout created (Stage 0)" << std::endl;
 
     // 6. Create framebuffers for swapchain images
     framebuffers.clear();
@@ -177,25 +160,10 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         // Store the render target view for later clearing
         renderTargetViews.push_back(rtv);
 
-        // Depth buffer
-        gfx::ITextureResource::Desc depthBufferDesc = {};
-        depthBufferDesc.type = gfx::IResource::Type::Texture2D;
-        depthBufferDesc.size.width = actualSwapchainDesc.width;   // PHASE 2 FIX: Use actual dimensions
-        depthBufferDesc.size.height = actualSwapchainDesc.height; // PHASE 2 FIX: Use actual dimensions
-        depthBufferDesc.size.depth = 1;
-        depthBufferDesc.format = gfx::Format::D32_FLOAT;
-        depthBufferDesc.defaultState = gfx::ResourceState::DepthWrite;
-        depthBufferDesc.allowedStates = gfx::ResourceStateSet(gfx::ResourceState::DepthWrite);
-        ComPtr<gfx::ITextureResource> depthBuffer = device->createTextureResource(depthBufferDesc, nullptr);
-        gfx::IResourceView::Desc depthBufferViewDesc = {};
-        depthBufferViewDesc.format = gfx::Format::D32_FLOAT;
-        depthBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
-        depthBufferViewDesc.type = gfx::IResourceView::Type::DepthStencil;
-        ComPtr<gfx::IResourceView> dsv = device->createTextureView(depthBuffer.get(), depthBufferViewDesc);
-
+        // Stage 0: No depth buffer for simplified setup
         gfx::IFramebuffer::Desc framebufferDesc = {};
         framebufferDesc.renderTargetCount = 1;
-        framebufferDesc.depthStencilView = dsv.get();
+        framebufferDesc.depthStencilView = nullptr; // No depth buffer for Stage 0
         framebufferDesc.renderTargetViews = rtv.readRef();
         framebufferDesc.layout = framebufferLayout;
         ComPtr<gfx::IFramebuffer> framebuffer = device->createFramebuffer(framebufferDesc);
@@ -221,7 +189,7 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         commandBuffers.push_back(commandBuffer);
     }
     
-    std::cout << "✅ PHASE 2: Created " << actualImageCount << " transient heaps and command buffers" << std::endl;
+    std::cout << "Created " << actualImageCount << " transient heaps and command buffers" << std::endl;
 
     // 8. Unified ImGui setup - build font atlas for both backends
     ImGuiIO& io = ImGui::GetIO();
@@ -291,10 +259,9 @@ SlangDisplay::~SlangDisplay() {
     framebuffers.clear();
     swapchain = nullptr;
     framebufferLayout = nullptr;
-#ifdef USE_VULKAN
     renderPassLayout = nullptr;
-    std::cout << "✅ PHASE 1: Vulkan resources cleaned up (surface managed by Slang GFX)" << std::endl;
-#endif
+    std::cout << "Vulkan resources cleaned up (surface managed by Slang GFX)" << std::endl;
+
     queue = nullptr;
     device = nullptr;
 }
@@ -371,101 +338,57 @@ void SlangDisplay::renderImGuiDrawData(gfx::ICommandBuffer* commandBuffer, gfx::
 }
 
 void SlangDisplay::display(RenderBackend* backend) {
-    // Acquire next image
+    try {
+    static int frameCount = 0;
+    frameCount++;
+    // std::cout << "🖼️ SlangDisplay::display - Starting frame " << frameCount << std::endl;
+    
+    // Acquire next swapchain image
     m_currentFrameIndex = swapchain->acquireNextImage();
     
-    // DIAGNOSTIC: Validate the acquired frame index
-    std::cout << "🔍 DEBUG: m_currentFrameIndex = " << m_currentFrameIndex << std::endl;
-    std::cout << "🔍 DEBUG: framebuffers.size() = " << framebuffers.size() << std::endl;
-    std::cout << "🔍 DEBUG: transientHeaps.size() = " << transientHeaps.size() << std::endl;
-    
     if (m_currentFrameIndex < 0 || m_currentFrameIndex >= (int)framebuffers.size()) {
-        std::cout << "❌ ERROR: Invalid frame index: " << m_currentFrameIndex << std::endl;
+        std::cerr << "❌ Invalid frame index: " << m_currentFrameIndex << std::endl;
         return;
     }
     
-    // Use proper frame-based buffer index for better resource utilization
+    // Use proper frame-based buffer index
     size_t bufferIndex = m_currentFrameIndex % transientHeaps.size();
     
-    std::cout << "🔍 DEBUG: bufferIndex = " << bufferIndex << std::endl;
-    std::cout << "🔍 DEBUG: framebuffer pointer = " << (void*)framebuffers[m_currentFrameIndex].get() << std::endl;
-#ifdef USE_VULKAN
-    std::cout << "🔍 DEBUG: renderPassLayout pointer = " << (void*)renderPassLayout.get() << std::endl;
-#endif
-    
-    // End the ImGui frame properly
-    ImGui::Render();
-    
     // Reset the transient heap to prepare for new commands
-    // With latest Slang improvements, this handles synchronization better
     transientHeaps[bufferIndex]->synchronizeAndReset();
     
     // Create a fresh command buffer
     Slang::ComPtr<gfx::ICommandBuffer> commandBuffer;
     transientHeaps[bufferIndex]->createCommandBuffer(commandBuffer.writeRef());
-
-    // Store command buffer for the backend to use
-    commandBuffers[bufferIndex] = commandBuffer;
-
-    // Let the backend render first - it will fill its image buffer with the desired color
-    backend->render(glm::vec3(0), glm::vec3(0, 0, 1), glm::vec3(0, 1, 0), 45.0f, false, true);
-
-    // For now, just clear to a red color to show the Slang backend is active
-    // This will be replaced with proper rendering later
-    // Phase A cleanup: remove debug-specific color messaging
-    std::cout << "SlangDisplay::display - Frame begin" << std::endl;
-
-    // NOW WE ACTUALLY RENDER TO THE GPU!
-    // Use the render pass layout we created (it has TargetLoadOp::Clear which will clear the screen)
-#ifdef USE_VULKAN
-    std::cout << "🔍 DEBUG: About to call encodeRenderCommands..." << std::endl;
-    std::cout << "🔍 DEBUG: renderPassLayout valid: " << (renderPassLayout.get() != nullptr) << std::endl;
-    std::cout << "🔍 DEBUG: framebuffer valid: " << (framebuffers[m_currentFrameIndex].get() != nullptr) << std::endl;
-    std::cout << "🔍 DEBUG: commandBuffer valid: " << (commandBuffer.get() != nullptr) << std::endl;
     
-    try {
-        auto renderEncoder = commandBuffer->encodeRenderCommands(renderPassLayout.get(), framebuffers[m_currentFrameIndex].get());
-        std::cout << "✅ DEBUG: encodeRenderCommands SUCCESS!" << std::endl;
-        
-        // The clear happens automatically when we start the render pass!
-        // For now, it clears to black (default), but we want red like D3D12
-        // TODO: Need to find the correct way to set clear color in Slang GFX render pass
-        
-        // End the render pass
-        renderEncoder->endEncoding();
-        std::cout << "✅ DEBUG: renderEncoder->endEncoding() SUCCESS!" << std::endl;
-    }
-    catch (const std::exception& e) {
-        std::cout << "❌ DEBUG: Exception in encodeRenderCommands: " << e.what() << std::endl;
-        return; // Early return to prevent further crashes
-    }
-    catch (...) {
-        std::cout << "❌ DEBUG: Unknown exception in encodeRenderCommands" << std::endl;
-        return; // Early return to prevent further crashes
-    }
-#else
-    // Phase A cleanup: remove explicit debug red clear.
-    // Intentionally no explicit clear here. When we introduce a real pipeline, 
-    // that path will write to the swapchain image. Until then contents may be undefined/stale.
-#endif
-
-    // Unified ImGui rendering through Slang GFX (works for both Vulkan and D3D12)
-    renderImGuiDrawData(commandBuffer.get(), framebuffers[m_currentFrameIndex].get());
+    // STEP 1: Simple screen clearing
+    clearScreenToColor(commandBuffer.get(), 0.2f, 0.3f, 0.8f, 1.0f);
     
+    // STEP 2: End ImGui frame (prevents accumulation)
+    ImGui::Render();
+    
+    // Execute and present
     commandBuffer->close();
     queue->executeCommandBuffers(1, commandBuffer.readRef(), nullptr, 0);
-    
-#ifdef USE_VULKAN
-    // Essential synchronization for Vulkan - ensures commands complete before heap reset
-    // Latest Slang has improved fence management, but this waitOnHost() ensures compatibility
-    // queue->waitOnHost();
-#endif
-    
-    // Call finish() for consistency (no-op for Vulkan, proper sync for D3D12)
     transientHeaps[bufferIndex]->finish();
-
-    // Present the swapchain
+    queue->waitOnHost();  // Stage 0 synchronization
     swapchain->present();
+    
+    // std::cout << "✅ Frame " << frameCount << " completed successfully" << std::endl;    
+    } 
+    catch (const std::exception& e) {
+        std::cerr << "Exception in display(): " << e.what() << std::endl;
+        throw;
+    } catch (...) {
+        std::cerr << " Unknown exception in display()" << std::endl;
+        throw;
+    }
+}
+
+void SlangDisplay::clearScreenToColor(gfx::ICommandBuffer* commandBuffer, 
+                                     float r, float g, float b, float a) {
+    // Stage 0: Minimal implementation - just log that we're clearing
+    // TODO: Implement actual clearing in Stage 1+
 }
 
 gfx::ICommandBuffer* SlangDisplay::getCurrentCommandBuffer() {

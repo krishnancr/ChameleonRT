@@ -42,12 +42,11 @@ public:
     std::vector<Slang::ComPtr<gfx::IResourceView>> renderTargetViews; // Store RTVs for clearing
     std::vector<Slang::ComPtr<gfx::ITransientResourceHeap>> transientHeaps;
     std::vector<Slang::ComPtr<gfx::ICommandBuffer>> commandBuffers; // Added command buffer storage
+    Slang::ComPtr<gfx::IRenderPassLayout> renderPassLayout; // Required for both Vulkan and D3D12
 
-#ifdef USE_VULKAN
-    Slang::ComPtr<gfx::IRenderPassLayout> renderPassLayout; // Required for proper Vulkan command buffer encoding
-#else  // DX12
+#ifndef USE_VULKAN
 #ifdef _WIN32
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> imgui_desc_heap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> imgui_desc_heap; // D3D12 legacy - to be removed
 #endif
 #endif
     
@@ -57,4 +56,7 @@ private:
     
     // Unified ImGui rendering method that works with both Vulkan and D3D12
     void renderImGuiDrawData(gfx::ICommandBuffer* commandBuffer, gfx::IFramebuffer* framebuffer);
+    
+    // Helper method for Stage 0 - simple screen clearing
+    void clearScreenToColor(gfx::ICommandBuffer* commandBuffer, float r, float g, float b, float a);
 };

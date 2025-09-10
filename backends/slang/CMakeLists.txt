@@ -1,6 +1,4 @@
-# Add path to custom FindSlang.cmake
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
-
+# FindSlang.cmake is now in the root cmake/ directory
 find_package(Slang REQUIRED)
 
 set(CRT_SLANG_SOURCES
