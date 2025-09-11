@@ -60,17 +60,26 @@ private:
     // Helper method for Stage 0 - simple screen clearing
     void clearScreenToColor(gfx::ICommandBuffer* commandBuffer, float r, float g, float b, float a);
     
-    // Shader validation methods (Standard complexity)
+    // Shader validation methods (Phase S1.2: Real Slang Shader Compilation)
     struct ShaderValidationData {
+        // Stage S1.2: Unified shader program using proper Slang API
+        Slang::ComPtr<gfx::IShaderProgram> validationShaderProgram;
+        Slang::ComPtr<gfx::IPipelineState> validationPipeline;
+        Slang::ComPtr<gfx::IBufferResource> uniformBuffer;
+        
+        // Legacy resources (Stage 0 compatibility)
         Slang::ComPtr<gfx::IShaderProgram> rainbowShader;
         Slang::ComPtr<gfx::IShaderProgram> pulseShader;
         Slang::ComPtr<gfx::IPipelineState> rainbowPipeline;
         Slang::ComPtr<gfx::IPipelineState> pulsePipeline;
         Slang::ComPtr<gfx::IBufferResource> timeBuffer;
         Slang::ComPtr<gfx::IResourceView> timeBufferView;
+        
+        // Timing and state
         double startTime;
-        int currentShader; // 0 = rainbow, 1 = pulse
+        int currentShader; // 0 = rainbow, 1 = pulse, 2 = wave
         bool validationActive;
+        bool shaderModeActive; // true = use shaders, false = use clearing (fallback)
     };
     
     ShaderValidationData m_validation;
@@ -79,4 +88,11 @@ private:
     void runShaderValidation();
     void cleanupShaderValidation();
     void updateTimeBuffer(float deltaTime);
+    
+    // Phase S1.3: Cross-platform Slang shader compilation
+    bool loadSlangShader(gfx::DeviceType deviceType);
+    bool loadSlangShaderProgram();
+    bool createValidationPipeline();
+    void renderWithSlangShaders(gfx::ICommandBuffer* commandBuffer);
+    std::string loadShaderFile(const char* filename);
 };
