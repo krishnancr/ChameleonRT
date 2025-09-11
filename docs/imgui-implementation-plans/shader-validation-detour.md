@@ -57,10 +57,9 @@ Successfully implemented direct Slang API shader compilation following the trian
 - ✅ **Cross-Platform Slang Compilation**: Direct Slang API compilation working on both Vulkan and D3D12
 - ✅ **Triangle Example Pattern**: Implemented proven `device->getSlangSession()` + `createCompositeComponentType` approach  
 - ✅ **DXC Dependency Resolution**: Identified and resolved missing DirectX Shader Compiler (dxcompiler.dll) for D3D12 DXIL
-- ✅ **Bytecode Extraction**: Successfully extracting compiled shaders via `getEntryPointCode()` (Vertex: 2868 bytes, Fragment: 4292 bytes)
-- ✅ **Cross-API Validation**: Both APIs compile identical shaders with native bytecode generation
-- ✅ **Progressive Shader Complexity**: Foundation for shader evolution from flat green → UV gradient → time-based animation
-- ✅ **CMake Integration**: Robust SDK discovery and DXC deployment using existing FindD3D12.cmake patterns
+- ✅ **Bytecode Extraction**: Successfully extracting compiled shaders via `getEntryPointCode()` (D3D12: 2896/4300 bytes, Vulkan: 400/2608 bytes)
+- ✅ **Cross-API Validation**: Both APIs compile identical shaders with appropriate native bytecode generation
+- ✅ **Optimized CMake Integration**: Efficient SDK discovery using existing FindD3D12.cmake patterns with conditional logic
 
 **Technical Implementation**:
 - Replaced Slang GFX compilation with direct Slang API calls following triangle example pattern
@@ -152,16 +151,16 @@ bool SlangDisplay::loadSlangShader() {
 }
 ```
 
-### CMake Integration with Robust SDK Discovery
+### CMake Integration with Optimized SDK Discovery
 ```cmake
 # filepath: backends/slang/CMakeLists.txt
-# Enhanced CMake integration using existing FindD3D12.cmake module
+# Optimized CMake integration using existing FindD3D12.cmake module
 
-# Use the existing FindD3D12 module from DXR backend
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../dxr/cmake")
-
-# Only search for D3D12/DXC on Windows platforms
-if(WIN32)
+# Only search for D3D12/DXC on Windows platforms when not building for Vulkan
+if(WIN32 AND NOT (DEFINED USE_VULKAN AND USE_VULKAN))
+    # Use the existing FindD3D12 module from DXR backend for DXC detection
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../dxr/cmake")
+    
     find_package(D3D12)
     
     if(D3D12_FOUND AND D3D12_SHADER_COMPILER)
@@ -188,14 +187,14 @@ if(WIN32)
 endif()
 
 # Configure deployment target
-add_library(slang_backend ${SLANG_BACKEND_SOURCES})
+add_library(crt_slang ${CRT_SLANG_SOURCES})
 
-# Deploy DXC runtime if available and needed
+# Deploy DXC runtime if available and needed for D3D12 builds only
 if(WIN32 AND DXC_DEPLOY_NEEDED)
-    add_custom_command(TARGET slang_backend POST_BUILD
+    add_custom_command(TARGET crt_slang POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${DXC_RUNTIME_DLL}"
-        "$<TARGET_FILE_DIR:chameleonrt>"
+        "${FINAL_OUTPUT_DIR}"
         COMMENT "Deploying DXC runtime for Slang D3D12 support"
     )
 endif()
@@ -240,21 +239,20 @@ float4 timeAnimation(VertexOutput input) : SV_Target {
 ```powershell
 # Build and test D3D12 with DXC deployment
 cd C:\dev\ChameleonRT
-cmake -B build_d3d12
-cmake --build build_d3d12 --config Debug
+.\clean_rebuild.ps1 -Clean
 
-# Expected output with successful DXC deployment:
-# -- Found DXC compiler: C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/dxc.exe
-# -- Found DXC runtime: C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/dxcompiler.dll
-# -- Deploying DXC runtime for Slang D3D12 support
-
-cd build_d3d12\Debug
+cd build\Debug
 .\chameleonrt.exe slang "C:\dev\ChameleonRT\test_cube.obj"
+
+# Expected CMake output with successful DXC deployment:
+# -- Found DXC compiler: C:/VulkanSDK/1.3.296.0/Bin/dxc.exe
+# -- Found DXC runtime: C:/VulkanSDK/1.3.296.0/Bin/dxcompiler.dll
+# -- Deploying DXC runtime for Slang D3D12 support
 
 # Expected console output:
 # 🔧 Loading Slang shader using direct API...
-# ✅ Successfully extracted bytecode: Vertex shader: 2868 bytes
-# ✅ Successfully extracted bytecode: Fragment shader: 4292 bytes  
+# ✅ Successfully extracted bytecode: Vertex shader: 2896 bytes
+# ✅ Successfully extracted bytecode: Fragment shader: 4300 bytes  
 # ✅ Successfully created shader program!
 ```
 
@@ -262,37 +260,44 @@ cd build_d3d12\Debug
 ```powershell
 # Build and test Vulkan (built-in SPIR-V compilation)
 cd C:\dev\ChameleonRT
-cmake -B build_vulkan -DUSE_VULKAN=ON
-cmake --build build_vulkan --config Debug
+.\clean_rebuild.ps1 -Clean -UseVulkan
 
 cd build_vulkan\Debug  
 .\chameleonrt.exe slang "C:\dev\ChameleonRT\test_cube.obj"
 
-# Expected console output (identical bytecode sizes):
+# Expected CMake output (NO DXC detection - optimized!):
+# -- Found Slang: C:/dev/slang/build/RelWithDebInfo/include
+# -- Found Vulkan: C:/VulkanSDK/1.3.296.0/Lib/vulkan-1.lib
+# (NO DXC compiler or runtime messages)
+
+# Expected console output:
 # 🔧 Loading Slang shader using direct API...
-# ✅ Successfully extracted bytecode: Vertex shader: 2868 bytes
-# ✅ Successfully extracted bytecode: Fragment shader: 4292 bytes
+# ✅ Successfully extracted bytecode: Vertex shader: 400 bytes
+# ✅ Successfully extracted bytecode: Fragment shader: 2608 bytes
 # ✅ Successfully created shader program!
 ```
 
 **Cross-API Validation Checklist**:
-- [x] Both APIs extract identical bytecode sizes (2868 bytes vertex, 4292 bytes fragment)
+- [x] D3D12 extracts consistent bytecode (2896 bytes vertex, 4300 bytes fragment)
+- [x] Vulkan extracts consistent bytecode (400 bytes vertex, 2608 bytes fragment) 
 - [x] Slang session creation succeeds on both backends  
 - [x] Module loading from source string works consistently
 - [x] Composite component type creation succeeds
 - [x] Entry point code extraction produces valid bytecode
 - [x] No compilation errors in console output
-- [x] DXC dependency automatically deployed for D3D12
+- [x] DXC dependency automatically deployed for D3D12 builds only
+- [x] Vulkan builds skip unnecessary DXC detection (optimized)
 - [x] Cross-platform validation commands work reliably
 
-**Expected Results**: Both builds should show identical console output with successful bytecode extraction and shader program creation.
+**Expected Results**: Both builds should show successful bytecode extraction and shader program creation with platform-appropriate bytecode sizes.
 
 **Final Acceptance Criteria**:
 - [x] Flat green triangle displays on both APIs (foundation for progressive complexity)
-- [x] Bytecode extraction shows consistent sizes across platforms  
+- [x] Bytecode extraction shows platform-appropriate sizes (DXIL vs SPIR-V differences expected)
 - [x] No shader compilation errors in console
-- [x] Both Vulkan and D3D12 use proper compilation paths (SPIR-V vs DXIL)
-- [x] DXC runtime deployed automatically for D3D12 builds
+- [x] D3D12 uses DXIL compilation path with auto-deployed DXC
+- [x] Vulkan uses SPIR-V compilation path without DXC dependency
+- [x] CMake integration optimized to avoid unnecessary dependencies
 - [x] Foundation established for progressive shader complexity (UV gradient → time animation)
 - [x] Direct Slang API compilation proven reliable for ImGui shader needs
 
@@ -687,10 +692,10 @@ Once this validation is complete, proceeding with ImGui integration in Plan A wi
 ### Success Criteria Summary
 After completing this detour:
 - ✅ **Direct Slang API Compilation**: Native shader compilation working cross-platform
-- ✅ **Cross-API Compatibility**: Identical bytecode generation on Vulkan and D3D12  
-- ✅ **DXC Dependency Resolution**: Automatic deployment of DirectX Shader Compiler
+- ✅ **Cross-API Compatibility**: Platform-appropriate bytecode generation (DXIL vs SPIR-V)  
+- ✅ **DXC Dependency Resolution**: Automatic deployment of DirectX Shader Compiler for D3D12 builds only
 - ✅ **Resource Management**: Clean compilation lifecycle, proper session management
-- ✅ **CMake Integration**: Robust SDK discovery using professional FindD3D12.cmake patterns
+- ✅ **Optimized CMake Integration**: Efficient SDK discovery with conditional logic based on target API
 - ✅ **Development Ready**: Foundation prepared for ImGui integration with proven Slang compilation
 
 This detour transforms an uncertain "will Slang compilation work?" into a confident "Slang compilation definitely works!" before tackling ImGui complexity.
@@ -701,11 +706,11 @@ This detour transforms an uncertain "will Slang compilation work?" into a confid
 
 ### **✅ COMPLETED OBJECTIVES**
 - **Cross-Platform Slang Compilation**: Direct Slang API compilation working on both Vulkan and D3D12
-- **DXC Dependency Resolution**: Automatic discovery and deployment of DirectX Shader Compiler
+- **DXC Dependency Resolution**: Automatic discovery and deployment of DirectX Shader Compiler for D3D12 builds only
 - **Triangle Example Pattern**: Proven `device->getSlangSession()` + `createCompositeComponentType` implementation
-- **Bytecode Extraction**: Successful shader compilation with native `getEntryPointCode()` (2868 bytes vertex, 4292 bytes fragment)
-- **CMake Integration**: Professional SDK discovery using existing FindD3D12.cmake patterns
-- **Cross-API Validation**: Identical compilation behavior and bytecode generation across platforms
+- **Bytecode Extraction**: Successful shader compilation with native `getEntryPointCode()` (D3D12: 2896/4300 bytes, Vulkan: 400/2608 bytes)
+- **Optimized CMake Integration**: Efficient SDK discovery using existing FindD3D12.cmake patterns with conditional logic
+- **Cross-API Validation**: Platform-appropriate compilation behavior and bytecode generation
 
 ### **🔄 IMPLEMENTATION APPROACH ACHIEVEMENTS**
 **Original Plan**: Animated shader rendering with visual validation
@@ -713,11 +718,11 @@ This detour transforms an uncertain "will Slang compilation work?" into a confid
 **Result**: ✅ **Core shader compilation pipeline proven reliable for ImGui integration**
 
 ### **📊 VALIDATION RESULTS**
-- **Vulkan**: ✅ Built-in SPIR-V compilation, stable bytecode extraction
-- **D3D12**: ✅ DXC-powered DXIL compilation, automated dependency deployment
-- **Cross-API**: ✅ Identical shader sources compile to appropriate bytecode formats
+- **Vulkan**: ✅ Built-in SPIR-V compilation, stable bytecode extraction (400/2608 bytes)
+- **D3D12**: ✅ DXC-powered DXIL compilation, automated dependency deployment (2896/4300 bytes)
+- **Cross-API**: ✅ Platform-appropriate shader compilation with expected bytecode size differences
 - **Resource Management**: ✅ Clean Slang session lifecycle, proper component cleanup
-- **CMake Integration**: ✅ Robust SDK discovery without hardcoded paths
+- **CMake Integration**: ✅ Optimized SDK discovery - DXC detection only for D3D12 builds
 
 ### **🎯 READINESS FOR NEXT PHASE**
 **Foundation Quality**: ✅ **EXCELLENT** - Native Slang compilation proven and reliable

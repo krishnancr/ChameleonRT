@@ -1,6 +1,36 @@
 # FindSlang.cmake is now in the root cmake/ directory
 find_package(Slang REQUIRED)
 
+# Only search for D3D12/DXC on Windows platforms when not building for Vulkan
+if(WIN32 AND NOT (DEFINED USE_VULKAN AND USE_VULKAN))
+    # Use the existing FindD3D12 module from DXR backend for DXC detection
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../dxr/cmake")
+    
+    find_package(D3D12)
+    
+    if(D3D12_FOUND AND D3D12_SHADER_COMPILER)
+        message(STATUS "Found DXC compiler: ${D3D12_SHADER_COMPILER}")
+        
+        # Get the directory containing DXC
+        get_filename_component(DXC_BIN_DIR ${D3D12_SHADER_COMPILER} DIRECTORY)
+        
+        # Look for dxcompiler.dll in the same directory as dxc.exe
+        find_file(DXC_RUNTIME_DLL 
+            NAMES dxcompiler.dll
+            PATHS ${DXC_BIN_DIR}
+            NO_DEFAULT_PATH)
+            
+        if(DXC_RUNTIME_DLL)
+            message(STATUS "Found DXC runtime: ${DXC_RUNTIME_DLL}")
+            set(DXC_DEPLOY_NEEDED TRUE)
+        else()
+            message(WARNING "DXC compiler found but dxcompiler.dll missing - D3D12 DXIL compilation may fail")
+        endif()
+    else()
+        message(WARNING "D3D12/DXC not found - D3D12 backend will use fallback compilation")
+    endif()
+endif()
+
 set(CRT_SLANG_SOURCES
     render_slang.cpp
     render_slang.h
@@ -81,6 +111,16 @@ foreach(DEP ${SLANG_DEPENDENCIES})
         COMMENT "Copying ${DEP} to main build output directory"
     )
 endforeach()
+
+# Deploy DXC runtime if available and needed for D3D12 DXIL compilation
+if(WIN32 AND DXC_DEPLOY_NEEDED)
+    add_custom_command(TARGET crt_slang POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${DXC_RUNTIME_DLL}"
+        "${FINAL_OUTPUT_DIR}"
+        COMMENT "Deploying DXC runtime for Slang D3D12 support"
+    )
+endif()
 
 # Copy the shader file to the output directory so it can be found at runtime
 add_custom_command(TARGET crt_slang POST_BUILD
