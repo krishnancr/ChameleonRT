@@ -6,6 +6,24 @@
 #include "util/display/imgui_impl_sdl.h"
 #include <iostream>
 #include <fstream>
+
+// Note: Not using internal gfx-util/shader-cursor.h - implementing uniform binding with public API
+
+#ifdef USE_VULKAN
+// Vulkan includes for direct command access
+#include <vulkan/vulkan.h>
+#ifdef __linux__
+#include <X11/Xlib.h>
+#endif
+#else  // DX12
+#ifdef _WIN32
+#include <d3d12.h>
+#include <dxgiformat.h>
+#include <wrl/client.h>
+// Note: No longer including imgui_impl_dx12.h - using unified rendering
+#endif
+#endif
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -73,31 +91,26 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     uint32_t actualImageCount = actualSwapchainDesc.imageCount;
     gfx::Format swapchainFormat = actualSwapchainDesc.format;
 
-    // 5. Create framebuffer layout using actual swapchain format (following triangle example with depth)
+    // 5. Create framebuffer layout using actual swapchain format (Stage 0: no depth)
     gfx::IFramebufferLayout::TargetLayout renderTargetLayout = {swapchainFormat, 1}; // Use actual format
-    gfx::IFramebufferLayout::TargetLayout depthTargetLayout = {gfx::Format::D32_FLOAT, 1}; // Add depth buffer like triangle example
     gfx::IFramebufferLayout::Desc framebufferLayoutDesc = {};
     framebufferLayoutDesc.renderTargetCount = 1;
     framebufferLayoutDesc.renderTargets = &renderTargetLayout;
-    framebufferLayoutDesc.depthStencil = &depthTargetLayout; // Add depth buffer to match triangle example
+    framebufferLayoutDesc.depthStencil = nullptr; // Stage 0: No depth buffer
     device->createFramebufferLayout(framebufferLayoutDesc, framebufferLayout.writeRef());
 
-    // 5.1. Create render pass layout (following triangle example pattern exactly)
+    // 5.1. Create render pass layout for Vulkan (required for proper command buffer encoding)
     gfx::IRenderPassLayout::Desc renderPassLayoutDesc = {};
     renderPassLayoutDesc.framebufferLayout = framebufferLayout;
     renderPassLayoutDesc.renderTargetCount = 1;
     gfx::IRenderPassLayout::TargetAccessDesc renderTargetAccess = {};
-    gfx::IRenderPassLayout::TargetAccessDesc depthStencilAccess = {};
-    renderTargetAccess.loadOp = gfx::IRenderPassLayout::TargetLoadOp::Clear;
-    renderTargetAccess.storeOp = gfx::IRenderPassLayout::TargetStoreOp::Store;
-    renderTargetAccess.initialState = gfx::ResourceState::Undefined;
-    renderTargetAccess.finalState = gfx::ResourceState::Present;
-    depthStencilAccess.loadOp = gfx::IRenderPassLayout::TargetLoadOp::Clear;
-    depthStencilAccess.storeOp = gfx::IRenderPassLayout::TargetStoreOp::Store;
-    depthStencilAccess.initialState = gfx::ResourceState::DepthWrite;
-    depthStencilAccess.finalState = gfx::ResourceState::DepthWrite;
+    renderTargetAccess.loadOp = gfx::IRenderPassLayout::TargetLoadOp::Clear;  // Clear on load
+    renderTargetAccess.storeOp = gfx::IRenderPassLayout::TargetStoreOp::Store; // Store result
+    renderTargetAccess.initialState = gfx::ResourceState::Undefined;           // First use
+    renderTargetAccess.finalState = gfx::ResourceState::Present;               // For presentation
+    
     renderPassLayoutDesc.renderTargetAccess = &renderTargetAccess;
-    renderPassLayoutDesc.depthStencilAccess = &depthStencilAccess;
+    renderPassLayoutDesc.depthStencilAccess = nullptr; // No depth buffer for Stage 0
     
     auto result = device->createRenderPassLayout(renderPassLayoutDesc, renderPassLayout.writeRef());
     if (SLANG_FAILED(result)) {
@@ -122,30 +135,10 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         // Store the render target view for later clearing
         renderTargetViews.push_back(rtv);
 
-        // Create depth buffer (following triangle example pattern exactly)
-        gfx::ITextureResource::Desc depthBufferDesc;
-        depthBufferDesc.type = gfx::IResource::Type::Texture2D;
-        depthBufferDesc.size.width = 1280; // TODO: Get from actual window size
-        depthBufferDesc.size.height = 720;
-        depthBufferDesc.size.depth = 1;
-        depthBufferDesc.format = gfx::Format::D32_FLOAT;
-        depthBufferDesc.defaultState = gfx::ResourceState::DepthWrite;
-        depthBufferDesc.allowedStates = gfx::ResourceStateSet(gfx::ResourceState::DepthWrite);
-        gfx::ClearValue depthClearValue = {};
-        depthBufferDesc.optimalClearValue = &depthClearValue;
-        ComPtr<gfx::ITextureResource> depthBufferResource = device->createTextureResource(depthBufferDesc, nullptr);
-
-        gfx::IResourceView::Desc depthBufferViewDesc;
-        memset(&depthBufferViewDesc, 0, sizeof(depthBufferViewDesc));
-        depthBufferViewDesc.format = gfx::Format::D32_FLOAT;
-        depthBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
-        depthBufferViewDesc.type = gfx::IResourceView::Type::DepthStencil;
-        ComPtr<gfx::IResourceView> dsv = device->createTextureView(depthBufferResource.get(), depthBufferViewDesc);
-
-        // Create framebuffer with depth buffer (like triangle example)
+        // Stage 0: No depth buffer for simplified setup
         gfx::IFramebuffer::Desc framebufferDesc = {};
         framebufferDesc.renderTargetCount = 1;
-        framebufferDesc.depthStencilView = dsv.get(); // Add depth buffer like triangle example
+        framebufferDesc.depthStencilView = nullptr; // No depth buffer for Stage 0
         framebufferDesc.renderTargetViews = rtv.readRef();
         framebufferDesc.layout = framebufferLayout;
         ComPtr<gfx::IFramebuffer> framebuffer = device->createFramebuffer(framebufferDesc);
@@ -182,6 +175,35 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         io.Fonts->Build();
     }
 
+#ifndef USE_VULKAN
+    // Keep D3D12 descriptor heap for now (will be removed in future iteration)
+#ifdef _WIN32
+    // Create a descriptor heap for ImGui (D3D12 legacy - to be removed)
+    D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+    desc.NumDescriptors = 1;
+    desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ID3D12Device* d3d12Device = nullptr;
+    
+    // Get the native D3D12 device using the proper Slang GFX API
+    gfx::IDevice::InteropHandles handles;
+    if (SLANG_SUCCEEDED(device->getNativeDeviceHandles(&handles)))
+    {
+        // Check if the handle is a D3D12 handle
+        if (handles.handles[0].api == gfx::InteropHandleAPI::D3D12)
+        {
+            d3d12Device = (ID3D12Device*)(void*)handles.handles[0].handleValue;
+        }
+    }
+    
+    if (d3d12Device)
+    {
+        HRESULT hr = d3d12Device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&imgui_desc_heap));
+        // TODO: Remove this when full Slang GFX ImGui implementation is complete
+    }
+#endif
+#endif
+
     // Initialize shader validation first (to create shader program)
     initShaderValidation();
     
@@ -211,12 +233,21 @@ SlangDisplay::~SlangDisplay() {
     // Cleanup shader validation resources
     cleanupShaderValidation();
 
+#ifndef USE_VULKAN
+#ifdef _WIN32
+    // Clean up D3D12 descriptor heap (legacy - will be removed)
+    if (imgui_desc_heap) {
+        imgui_desc_heap.Reset();
+    }
+#endif
+#endif
+
     // Explicitly clear resources in a controlled order
     framebuffers.clear();
     swapchain = nullptr;
     framebufferLayout = nullptr;
     renderPassLayout = nullptr;
-    std::cout << "Graphics resources cleaned up (surface managed by Slang GFX)" << std::endl;
+    std::cout << "Vulkan resources cleaned up (surface managed by Slang GFX)" << std::endl;
 
     queue = nullptr;
     device = nullptr;
@@ -360,8 +391,92 @@ void SlangDisplay::clearScreenToColor(gfx::ICommandBuffer* commandBuffer,
         std::cerr << "❌ Invalid frame index for clearing: " << m_currentFrameIndex << std::endl;
         return;
     }
+    
 
-    // Unified path: Use resource encoder for clearing (works for both D3D12 and Vulkan)
+    
+#ifdef USE_VULKAN
+    // Pure Direct Vulkan clearing using image transition and vkCmdClearColorImage
+    if (device->getDeviceInfo().deviceType == gfx::DeviceType::Vulkan) {
+        // Get native Vulkan handles
+        gfx::IDevice::InteropHandles deviceHandles;
+        if (SLANG_SUCCEEDED(device->getNativeDeviceHandles(&deviceHandles)) && 
+            deviceHandles.handles[0].api == gfx::InteropHandleAPI::Vulkan) {
+            
+            VkDevice vkDevice = (VkDevice)deviceHandles.handles[0].handleValue;
+            
+            gfx::InteropHandle cmdBufHandle;
+            if (SLANG_SUCCEEDED(commandBuffer->getNativeHandle(&cmdBufHandle)) &&
+                cmdBufHandle.api == gfx::InteropHandleAPI::Vulkan) {
+                
+                VkCommandBuffer vkCmdBuf = (VkCommandBuffer)cmdBufHandle.handleValue;
+                
+                // Get the swapchain image texture resource
+                ComPtr<gfx::ITextureResource> colorBuffer;
+                swapchain->getImage(m_currentFrameIndex, colorBuffer.writeRef());
+                
+                gfx::InteropHandle imageHandle;
+                if (SLANG_SUCCEEDED(colorBuffer->getNativeResourceHandle(&imageHandle)) &&
+                    imageHandle.api == gfx::InteropHandleAPI::Vulkan) {
+                    
+                    VkImage vkImage = (VkImage)imageHandle.handleValue;
+                    
+                    // Transition image to TRANSFER_DST_OPTIMAL layout for clearing
+                    VkImageMemoryBarrier barrier = {};
+                    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.image = vkImage;
+                    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    barrier.subresourceRange.baseMipLevel = 0;
+                    barrier.subresourceRange.levelCount = 1;
+                    barrier.subresourceRange.baseArrayLayer = 0;
+                    barrier.subresourceRange.layerCount = 1;
+                    barrier.srcAccessMask = 0;
+                    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    
+                    vkCmdPipelineBarrier(vkCmdBuf,
+                                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                       0, 0, nullptr, 0, nullptr, 1, &barrier);
+                    
+                    // Clear the image
+                    VkClearColorValue clearColor = {};
+                    clearColor.float32[0] = r;
+                    clearColor.float32[1] = g;
+                    clearColor.float32[2] = b;
+                    clearColor.float32[3] = a;
+                    
+                    VkImageSubresourceRange range = {};
+                    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    range.baseMipLevel = 0;
+                    range.levelCount = 1;
+                    range.baseArrayLayer = 0;
+                    range.layerCount = 1;
+                    
+                    vkCmdClearColorImage(vkCmdBuf, vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                       &clearColor, 1, &range);
+                    
+                    // Transition back to PRESENT_SRC_KHR for presentation
+                    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+                    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    barrier.dstAccessMask = 0;
+                    
+                    vkCmdPipelineBarrier(vkCmdBuf,
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                       0, 0, nullptr, 0, nullptr, 1, &barrier);
+                    
+                    return;
+                }
+            }
+        }
+    }
+#endif
+    
+    // D3D12 path: Use resource encoder for clearing
     auto* resourceEncoder = commandBuffer->encodeResourceCommands();
     if (!resourceEncoder) {
         std::cerr << "❌ Failed to create resource encoder for clearing" << std::endl;

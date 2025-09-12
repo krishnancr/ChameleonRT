@@ -24,9 +24,6 @@ include(cmake/package.cmake)
 
 include(CMakeDependentOption)
 
-# Add CMake module path for custom FindSlang
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/backends/slang/cmake")
-
 # Optionally allow user to specify SLANG_ROOT from environment or script
 if(DEFINED ENV{SLANG_PATH})
     set(Slang_ROOT $ENV{SLANG_PATH})

@@ -96,6 +96,7 @@ int main(int argc, const char **argv)
     ImGui_ImplSDL2_Init(window);
 
     render_plugin->set_imgui_context(ImGui::GetCurrentContext());
+
     {
         std::unique_ptr<Display> display = render_plugin->make_display(window);
         run_app(args, window, display.get(), render_plugin.get());

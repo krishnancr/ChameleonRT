@@ -32,7 +32,7 @@ $env:http_proxy = "http://proxy-dmz.intel.com:912"
 Write-Host "Set proxy environment variables" -ForegroundColor Cyan
 
 # Define paths
-$SLANG_PATH = "C:\dev\slang\build\RelWithDebInfo"
+$SLANG_PATH = "C:\dev\slang\build\Debug"
 $SDL2_PATH = "C:\dev\SDL2\cmake"
 $PROJECT_ROOT = "C:\dev\ChameleonRT"
 

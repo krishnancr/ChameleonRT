@@ -60,6 +60,23 @@ private:
     // Helper method for Stage 0 - simple screen clearing
     void clearScreenToColor(gfx::ICommandBuffer* commandBuffer, float r, float g, float b, float a);
     
+    // Triangle rendering resources (Step 3: following triangle example pattern)
+    struct TriangleRenderingData {
+        Slang::ComPtr<gfx::IShaderProgram> triangleShaderProgram;
+        Slang::ComPtr<gfx::IPipelineState> trianglePipeline;
+        Slang::ComPtr<gfx::IBufferResource> triangleVertexBuffer;
+        Slang::ComPtr<gfx::IBufferResource> triangleUniformBuffer;
+        Slang::ComPtr<gfx::IInputLayout> triangleInputLayout;
+        bool triangleInitialized = false;
+    };
+    
+    TriangleRenderingData m_triangle;
+    
+    // Triangle rendering methods
+    bool initTriangleRendering();
+    void renderTriangle(gfx::IRenderCommandEncoder* renderEncoder);
+    void cleanupTriangleRendering();
+    
     // Shader validation methods (Phase S1.2: Real Slang Shader Compilation)
     struct ShaderValidationData {
         // Stage S1.2: Unified shader program using proper Slang API
