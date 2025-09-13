@@ -29,7 +29,7 @@ public:
 
     // Resource access methods for RenderSlang
     gfx::IDevice* getDevice() { return device.get(); }
-    gfx::ICommandBuffer* getCurrentCommandBuffer();
+    // REMOVED: getCurrentCommandBuffer() - create fresh each frame like triangle example
     gfx::IFramebuffer* getCurrentFramebuffer();
     gfx::IFramebufferLayout* getFramebufferLayout() { return framebufferLayout.get(); }
     uint32_t getCurrentFrameIndex() const { return m_currentFrameIndex; }
@@ -41,8 +41,12 @@ public:
     std::vector<Slang::ComPtr<gfx::IFramebuffer>> framebuffers;
     std::vector<Slang::ComPtr<gfx::IResourceView>> renderTargetViews; // Store RTVs for clearing
     std::vector<Slang::ComPtr<gfx::ITransientResourceHeap>> transientHeaps;
-    std::vector<Slang::ComPtr<gfx::ICommandBuffer>> commandBuffers; // Added command buffer storage
+    // REMOVED: commandBuffers storage - create fresh each frame like triangle example
     Slang::ComPtr<gfx::IRenderPassLayout> renderPassLayout; // Required for both Vulkan and D3D12
+
+    // Triangle Example Auto-Clear Support (eliminates encodeResourceCommands)
+    float m_clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    bool m_shouldClearOnNextRender = false;
 
 #ifndef USE_VULKAN
 #ifdef _WIN32
@@ -76,6 +80,12 @@ private:
     bool initTriangleRendering();
     void renderTriangle(gfx::IRenderCommandEncoder* renderEncoder);
     void cleanupTriangleRendering();
+    
+    // NEW: Triangle example pattern renderFrame
+    void renderFrameTriangleStyle(int frameBufferIndex);
+    
+    // Helper for triangle example compatibility
+    bool isTestMode();
     
     // Shader validation methods (Phase S1.2: Real Slang Shader Compilation)
     struct ShaderValidationData {
