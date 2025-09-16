@@ -44,18 +44,9 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     queueDesc.type = gfx::ICommandQueue::QueueType::Graphics;
     queue = device->createCommandQueue(queueDesc);
 
-    // TRIANGLE EXAMPLE PATTERN: Create framebuffer layout FIRST with hardcoded format
-    gfx::IFramebufferLayout::TargetLayout renderTargetLayout = {gfx::Format::R8G8B8A8_UNORM, 1}; // EXACTLY like triangle example
-    gfx::IFramebufferLayout::TargetLayout depthTargetLayout = {gfx::Format::D32_FLOAT, 1}; // EXACTLY like triangle example
-    gfx::IFramebufferLayout::Desc framebufferLayoutDesc = {};
-    framebufferLayoutDesc.renderTargetCount = 1;
-    framebufferLayoutDesc.renderTargets = &renderTargetLayout;
-    framebufferLayoutDesc.depthStencil = &depthTargetLayout;
-    device->createFramebufferLayout(framebufferLayoutDesc, framebufferLayout.writeRef());
-
-    // Create swapchain AFTER framebuffer layout (triangle example pattern)
+    // TRIANGLE EXAMPLE PATTERN: Create swapchain FIRST, then query actual format
     gfx::ISwapchain::Desc swapchainDesc = {};
-    swapchainDesc.format = gfx::Format::R8G8B8A8_UNORM; // EXACTLY same format as framebuffer layout
+    swapchainDesc.format = gfx::Format::R8G8B8A8_UNORM; // Request preferred format
     swapchainDesc.width = 1280; // Default, should be window size
     swapchainDesc.height = 720;
     swapchainDesc.imageCount = 2; // EXACTLY like triangle example (kSwapchainImageCount = 2)
@@ -77,14 +68,24 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     
     swapchain = device->createSwapchain(swapchainDesc, windowHandle);
 
-    // Query actual swapchain properties
+    // Query actual swapchain properties and format (CRITICAL FIX: following triangle example)
     const auto& actualSwapchainDesc = swapchain->getDesc();
     uint32_t actualImageCount = actualSwapchainDesc.imageCount;
-    gfx::Format swapchainFormat = actualSwapchainDesc.format;
+    gfx::Format actualFormat = actualSwapchainDesc.format;  // This might be B8G8R8A8_UNORM!
     
-    // ===== CRITICAL: Ensure format consistency like triangle example =====
-    std::cout << "🔍 CRITICAL: Swapchain format: R8G8B8A8_UNORM (hardcoded like triangle)" << std::endl;
-    std::cout << "🔍 CRITICAL: Framebuffer format: R8G8B8A8_UNORM (hardcoded like triangle)" << std::endl;
+    // ===== CRITICAL: Log format selection like triangle example =====
+    std::cout << "🔍 SWAPCHAIN: Requested R8G8B8A8_UNORM (" << static_cast<int>(gfx::Format::R8G8B8A8_UNORM) 
+              << "), Actual: " << static_cast<int>(actualFormat) << std::endl;
+    std::cout << "🔍 CRITICAL: Using actual format for all resources: " << static_cast<int>(actualFormat) << std::endl;
+    
+    // Now create framebuffer layout with ACTUAL format (triangle example pattern)
+    gfx::IFramebufferLayout::TargetLayout renderTargetLayout = {actualFormat, 1}; // Use actual format!
+    gfx::IFramebufferLayout::TargetLayout depthTargetLayout = {gfx::Format::D32_FLOAT, 1};
+    gfx::IFramebufferLayout::Desc framebufferLayoutDesc = {};
+    framebufferLayoutDesc.renderTargetCount = 1;
+    framebufferLayoutDesc.renderTargets = &renderTargetLayout;
+    framebufferLayoutDesc.depthStencil = &depthTargetLayout;
+    device->createFramebufferLayout(framebufferLayoutDesc, framebufferLayout.writeRef());
     std::cout << "🔍 CRITICAL: Swapchain reports " << actualImageCount << " images (expecting 2)" << std::endl;
     if (actualImageCount != 2) {
         std::cerr << "❌ CRITICAL: Triangle example expects exactly 2 images!" << std::endl;
@@ -123,10 +124,10 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         ComPtr<gfx::ITextureResource> colorBuffer;
         swapchain->getImage(i, colorBuffer.writeRef());
         
-        // Create render target view with HARDCODED format like triangle example
+        // Create render target view with ACTUAL format (CRITICAL FIX)
         gfx::IResourceView::Desc colorBufferViewDesc = {};
         memset(&colorBufferViewDesc, 0, sizeof(colorBufferViewDesc)); // Like triangle example
-        colorBufferViewDesc.format = gfx::Format::R8G8B8A8_UNORM; // HARDCODED like triangle example
+        colorBufferViewDesc.format = actualFormat; // Use actual format, not hardcoded!
         colorBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
         colorBufferViewDesc.type = gfx::IResourceView::Type::RenderTarget;
         ComPtr<gfx::IResourceView> rtv = device->createTextureView(colorBuffer.get(), colorBufferViewDesc);
@@ -271,11 +272,95 @@ std::string SlangDisplay::name() {
 }
 
 void SlangDisplay::resize(const int width, const int height) {
-    
-    if (swapchain) {
-        swapchain->resize(width, height);
-        // Recreate framebuffers as needed (not shown for brevity)
+    if (!swapchain || width <= 0 || height <= 0) {
+        std::cerr << "❌ RESIZE: Invalid parameters - swapchain=" << (swapchain ? "valid" : "null") 
+                  << " size=" << width << "x" << height << std::endl;
+        return;
     }
+    
+    std::cout << "🔄 RESIZE: Starting swapchain resize to " << width << "x" << height << std::endl;
+    
+    // 1. CRITICAL: Wait for GPU to finish all work (triangle example pattern)
+    std::cout << "🔄 RESIZE: Waiting for GPU to finish..." << std::endl;
+    queue->waitOnHost();
+    
+    // 2. CRITICAL: Clear all framebuffers BEFORE swapchain resize (triangle example pattern)
+    std::cout << "🔄 RESIZE: Clearing framebuffers before swapchain resize..." << std::endl;
+    framebuffers.clear();
+    renderTargetViews.clear();
+    
+    // 3. Resize swapchain and validate success (triangle example pattern)
+    std::cout << "🔄 RESIZE: Resizing swapchain..." << std::endl;
+    if (swapchain->resize(width, height) == SLANG_OK) {
+        // 4. CRITICAL: Recreate framebuffers for new swapchain images (triangle example pattern)
+        std::cout << "🔄 RESIZE: Recreating framebuffers..." << std::endl;
+        recreateSwapchainFramebuffers();
+        
+        std::cout << "✅ RESIZE: Swapchain resized successfully to " << width << "x" << height << std::endl;
+    } else {
+        std::cerr << "❌ CRITICAL: Swapchain resize failed!" << std::endl;
+        // TODO: Handle resize failure gracefully - for now continue with old framebuffers
+    }
+}
+
+// New method following triangle example createSwapchainFramebuffers() pattern
+void SlangDisplay::recreateSwapchainFramebuffers() {
+    const auto& swapchainDesc = swapchain->getDesc();
+    uint32_t imageCount = swapchainDesc.imageCount;
+    gfx::Format format = swapchainDesc.format;
+    
+    std::cout << "🔄 RECREATE: Creating " << imageCount << " framebuffers with format " << static_cast<int>(format) << std::endl;
+    
+    framebuffers.clear();
+    renderTargetViews.clear();
+    framebuffers.reserve(imageCount);
+    renderTargetViews.reserve(imageCount);
+    
+    for (uint32_t i = 0; i < imageCount; ++i) {
+        // Get swapchain image
+        ComPtr<gfx::ITextureResource> colorBuffer;
+        swapchain->getImage(i, colorBuffer.writeRef());
+        
+        // Create render target view with ACTUAL format (CRITICAL FIX)
+        gfx::IResourceView::Desc colorBufferViewDesc = {};
+        memset(&colorBufferViewDesc, 0, sizeof(colorBufferViewDesc)); // Like triangle example
+        colorBufferViewDesc.format = format; // Use actual format, not hardcoded!
+        colorBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
+        colorBufferViewDesc.type = gfx::IResourceView::Type::RenderTarget;
+        ComPtr<gfx::IResourceView> rtv = device->createTextureView(colorBuffer.get(), colorBufferViewDesc);
+        renderTargetViews.push_back(rtv);
+
+        // Create depth buffer (EXACT triangle example pattern)
+        gfx::ITextureResource::Desc depthBufferDesc;
+        depthBufferDesc.type = gfx::IResource::Type::Texture2D;
+        depthBufferDesc.size.width = swapchainDesc.width;
+        depthBufferDesc.size.height = swapchainDesc.height;
+        depthBufferDesc.size.depth = 1;
+        depthBufferDesc.format = gfx::Format::D32_FLOAT;
+        depthBufferDesc.defaultState = gfx::ResourceState::DepthWrite;
+        depthBufferDesc.allowedStates = gfx::ResourceStateSet(gfx::ResourceState::DepthWrite);
+        gfx::ClearValue depthClearValue = {};
+        depthBufferDesc.optimalClearValue = &depthClearValue;
+        ComPtr<gfx::ITextureResource> depthBufferResource = device->createTextureResource(depthBufferDesc, nullptr);
+
+        gfx::IResourceView::Desc depthBufferViewDesc;
+        memset(&depthBufferViewDesc, 0, sizeof(depthBufferViewDesc)); // Like triangle example
+        depthBufferViewDesc.format = gfx::Format::D32_FLOAT;
+        depthBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
+        depthBufferViewDesc.type = gfx::IResourceView::Type::DepthStencil;
+        ComPtr<gfx::IResourceView> dsv = device->createTextureView(depthBufferResource.get(), depthBufferViewDesc);
+
+        // Create framebuffer (EXACT triangle example pattern)
+        gfx::IFramebuffer::Desc framebufferDesc;
+        framebufferDesc.renderTargetCount = 1;
+        framebufferDesc.depthStencilView = dsv.get();
+        framebufferDesc.renderTargetViews = rtv.readRef();
+        framebufferDesc.layout = framebufferLayout;
+        ComPtr<gfx::IFramebuffer> framebuffer = device->createFramebuffer(framebufferDesc);
+        framebuffers.push_back(framebuffer);
+    }
+    
+    std::cout << "✅ RECREATE: Successfully created " << framebuffers.size() << " framebuffers" << std::endl;
 }
 
 void SlangDisplay::new_frame() {
@@ -314,8 +399,22 @@ void SlangDisplay::renderImGuiDrawData(gfx::ICommandBuffer* commandBuffer, gfx::
 
 void SlangDisplay::display(RenderBackend* backend) {
     try {
+    // CRITICAL: Validate swapchain state before use (triangle example pattern)
+    if (!swapchain || framebuffers.empty()) {
+        std::cerr << "❌ CRITICAL: Invalid swapchain state - swapchain=" << (swapchain ? "valid" : "null") 
+                  << " framebuffers=" << framebuffers.size() << std::endl;
+        return;
+    }
+    
     // Acquire next swapchain image
     m_currentFrameIndex = swapchain->acquireNextImage();
+    
+    // Additional validation: Check frame index is valid
+    if (m_currentFrameIndex < 0 || m_currentFrameIndex >= static_cast<int>(framebuffers.size())) {
+        std::cerr << "❌ CRITICAL: Invalid frame index " << m_currentFrameIndex 
+                  << " (framebuffers=" << framebuffers.size() << ")" << std::endl;
+        return;
+    }
     
     // ===== VALIDATION: Basic frame tracking (minimal logging) =====
     static int frameCount = 0;

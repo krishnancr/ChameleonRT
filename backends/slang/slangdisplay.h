@@ -64,6 +64,9 @@ private:
     // Helper method for Stage 0 - simple screen clearing
     void clearScreenToColor(gfx::ICommandBuffer* commandBuffer, float r, float g, float b, float a);
     
+    // Swapchain resize support following triangle example pattern
+    void recreateSwapchainFramebuffers();
+    
     // Triangle rendering resources (Step 3: following triangle example pattern)
     struct TriangleRenderingData {
         Slang::ComPtr<gfx::IShaderProgram> triangleShaderProgram;
