@@ -73,11 +73,6 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     uint32_t actualImageCount = actualSwapchainDesc.imageCount;
     gfx::Format actualFormat = actualSwapchainDesc.format;  // This might be B8G8R8A8_UNORM!
     
-    // ===== CRITICAL: Log format selection like triangle example =====
-    std::cout << "🔍 SWAPCHAIN: Requested R8G8B8A8_UNORM (" << static_cast<int>(gfx::Format::R8G8B8A8_UNORM) 
-              << "), Actual: " << static_cast<int>(actualFormat) << std::endl;
-    std::cout << "🔍 CRITICAL: Using actual format for all resources: " << static_cast<int>(actualFormat) << std::endl;
-    
     // Now create framebuffer layout with ACTUAL format (triangle example pattern)
     gfx::IFramebufferLayout::TargetLayout renderTargetLayout = {actualFormat, 1}; // Use actual format!
     gfx::IFramebufferLayout::TargetLayout depthTargetLayout = {gfx::Format::D32_FLOAT, 1};
@@ -86,7 +81,6 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     framebufferLayoutDesc.renderTargets = &renderTargetLayout;
     framebufferLayoutDesc.depthStencil = &depthTargetLayout;
     device->createFramebufferLayout(framebufferLayoutDesc, framebufferLayout.writeRef());
-    std::cout << "🔍 CRITICAL: Swapchain reports " << actualImageCount << " images (expecting 2)" << std::endl;
     if (actualImageCount != 2) {
         std::cerr << "❌ CRITICAL: Triangle example expects exactly 2 images!" << std::endl;
         return;
@@ -114,56 +108,8 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         throw std::runtime_error("Failed to create render pass layout");
     }
 
-    // 6. Create framebuffers for swapchain images (EXACT triangle example pattern)
-    framebuffers.clear();
-    renderTargetViews.clear();
-    framebuffers.reserve(actualImageCount);
-    renderTargetViews.reserve(actualImageCount);
-    
-    for (uint32_t i = 0; i < actualImageCount; ++i) {
-        ComPtr<gfx::ITextureResource> colorBuffer;
-        swapchain->getImage(i, colorBuffer.writeRef());
-        
-        // Create render target view with ACTUAL format (CRITICAL FIX)
-        gfx::IResourceView::Desc colorBufferViewDesc = {};
-        memset(&colorBufferViewDesc, 0, sizeof(colorBufferViewDesc)); // Like triangle example
-        colorBufferViewDesc.format = actualFormat; // Use actual format, not hardcoded!
-        colorBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
-        colorBufferViewDesc.type = gfx::IResourceView::Type::RenderTarget;
-        ComPtr<gfx::IResourceView> rtv = device->createTextureView(colorBuffer.get(), colorBufferViewDesc);
-
-        // Store the render target view for later clearing
-        renderTargetViews.push_back(rtv);
-
-        // Create depth buffer (EXACT triangle example pattern)
-        gfx::ITextureResource::Desc depthBufferDesc;
-        depthBufferDesc.type = gfx::IResource::Type::Texture2D;
-        depthBufferDesc.size.width = 1280; // TODO: Get from actual window size
-        depthBufferDesc.size.height = 720;
-        depthBufferDesc.size.depth = 1;
-        depthBufferDesc.format = gfx::Format::D32_FLOAT;
-        depthBufferDesc.defaultState = gfx::ResourceState::DepthWrite;
-        depthBufferDesc.allowedStates = gfx::ResourceStateSet(gfx::ResourceState::DepthWrite);
-        gfx::ClearValue depthClearValue = {};
-        depthBufferDesc.optimalClearValue = &depthClearValue;
-        ComPtr<gfx::ITextureResource> depthBufferResource = device->createTextureResource(depthBufferDesc, nullptr);
-
-        gfx::IResourceView::Desc depthBufferViewDesc;
-        memset(&depthBufferViewDesc, 0, sizeof(depthBufferViewDesc)); // Like triangle example
-        depthBufferViewDesc.format = gfx::Format::D32_FLOAT;
-        depthBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
-        depthBufferViewDesc.type = gfx::IResourceView::Type::DepthStencil;
-        ComPtr<gfx::IResourceView> dsv = device->createTextureView(depthBufferResource.get(), depthBufferViewDesc);
-
-        // Create framebuffer (EXACT triangle example pattern)
-        gfx::IFramebuffer::Desc framebufferDesc;
-        framebufferDesc.renderTargetCount = 1;
-        framebufferDesc.depthStencilView = dsv.get(); // Add depth buffer like triangle example
-        framebufferDesc.renderTargetViews = rtv.readRef();
-        framebufferDesc.layout = framebufferLayout;
-        ComPtr<gfx::IFramebuffer> framebuffer = device->createFramebuffer(framebufferDesc);
-        framebuffers.push_back(framebuffer);
-    }
+    // 6. Create framebuffers for swapchain images (UNIFIED METHOD)
+    createSwapchainFramebuffers();
 
     // 7. Create transient heaps (EXACT triangle example pattern)
     transientHeaps.clear();
@@ -176,8 +122,6 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         auto transientHeap = device->createTransientResourceHeap(transientHeapDesc);
         transientHeaps.push_back(transientHeap);
     }
-    
-
 
     // 8. Unified ImGui setup - build font atlas for both backends
     ImGuiIO& io = ImGui::GetIO();
@@ -190,18 +134,13 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
 
     // ===== VALIDATION STEP 1: Check vector sizes vs swapchain count =====
     uint32_t swapchainImageCount = swapchain->getDesc().imageCount;
-    std::cout << "🔍 VALIDATION - Swapchain image count: " << swapchainImageCount << std::endl;
-    std::cout << "🔍 VALIDATION - Framebuffers size: " << framebuffers.size() << std::endl;
-    std::cout << "🔍 VALIDATION - TransientHeaps size: " << transientHeaps.size() << std::endl;
-    std::cout << "🔍 VALIDATION - CommandBuffers: NONE (create fresh like triangle example)" << std::endl;
-    
+
     if (framebuffers.size() != swapchainImageCount) {
         std::cerr << "❌ VALIDATION FAILED: Framebuffers size mismatch!" << std::endl;
     }
     if (transientHeaps.size() != swapchainImageCount) {
         std::cerr << "❌ VALIDATION FAILED: TransientHeaps size mismatch!" << std::endl;
     }
-    std::cout << "✅ VALIDATION STEP 1 COMPLETE" << std::endl;
 
     // Initialize shader validation first (to create shader program)
     initShaderValidation();
@@ -236,22 +175,20 @@ SlangDisplay::~SlangDisplay() {
     swapchain = nullptr;
     framebufferLayout = nullptr;
     renderPassLayout = nullptr;
-    std::cout << "Graphics resources cleaned up (surface managed by Slang GFX)" << std::endl;
-
     queue = nullptr;
     device = nullptr;
+    std::cout << "Graphics resources cleaned up" << std::endl;
 }
 
 std::string SlangDisplay::gpu_brand() {
     if (device) {
         const gfx::DeviceInfo& info = device->getDeviceInfo();
-        
         // Print API verification information
         std::cout << "=== GRAPHICS API VERIFICATION ===" << std::endl;
         std::cout << "Device Type Enum: " << (int)info.deviceType << std::endl;
         std::cout << "API Name: " << (info.apiName ? info.apiName : "Unknown") << std::endl;
         std::cout << "Adapter Name: " << (info.adapterName ? info.adapterName : "Unknown") << std::endl;
-        
+
         // Additional compile-time verification
 #ifdef USE_VULKAN
         std::cout << "Compile-time API: VULKAN (USE_VULKAN defined)" << std::endl;
@@ -277,90 +214,22 @@ void SlangDisplay::resize(const int width, const int height) {
                   << " size=" << width << "x" << height << std::endl;
         return;
     }
-    
-    std::cout << "🔄 RESIZE: Starting swapchain resize to " << width << "x" << height << std::endl;
-    
-    // 1. CRITICAL: Wait for GPU to finish all work (triangle example pattern)
-    std::cout << "🔄 RESIZE: Waiting for GPU to finish..." << std::endl;
+
     queue->waitOnHost();
-    
-    // 2. CRITICAL: Clear all framebuffers BEFORE swapchain resize (triangle example pattern)
-    std::cout << "🔄 RESIZE: Clearing framebuffers before swapchain resize..." << std::endl;
     framebuffers.clear();
     renderTargetViews.clear();
     
-    // 3. Resize swapchain and validate success (triangle example pattern)
-    std::cout << "🔄 RESIZE: Resizing swapchain..." << std::endl;
     if (swapchain->resize(width, height) == SLANG_OK) {
-        // 4. CRITICAL: Recreate framebuffers for new swapchain images (triangle example pattern)
-        std::cout << "🔄 RESIZE: Recreating framebuffers..." << std::endl;
         recreateSwapchainFramebuffers();
-        
-        std::cout << "✅ RESIZE: Swapchain resized successfully to " << width << "x" << height << std::endl;
     } else {
         std::cerr << "❌ CRITICAL: Swapchain resize failed!" << std::endl;
-        // TODO: Handle resize failure gracefully - for now continue with old framebuffers
     }
 }
 
 // New method following triangle example createSwapchainFramebuffers() pattern
 void SlangDisplay::recreateSwapchainFramebuffers() {
-    const auto& swapchainDesc = swapchain->getDesc();
-    uint32_t imageCount = swapchainDesc.imageCount;
-    gfx::Format format = swapchainDesc.format;
-    
-    std::cout << "🔄 RECREATE: Creating " << imageCount << " framebuffers with format " << static_cast<int>(format) << std::endl;
-    
-    framebuffers.clear();
-    renderTargetViews.clear();
-    framebuffers.reserve(imageCount);
-    renderTargetViews.reserve(imageCount);
-    
-    for (uint32_t i = 0; i < imageCount; ++i) {
-        // Get swapchain image
-        ComPtr<gfx::ITextureResource> colorBuffer;
-        swapchain->getImage(i, colorBuffer.writeRef());
-        
-        // Create render target view with ACTUAL format (CRITICAL FIX)
-        gfx::IResourceView::Desc colorBufferViewDesc = {};
-        memset(&colorBufferViewDesc, 0, sizeof(colorBufferViewDesc)); // Like triangle example
-        colorBufferViewDesc.format = format; // Use actual format, not hardcoded!
-        colorBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
-        colorBufferViewDesc.type = gfx::IResourceView::Type::RenderTarget;
-        ComPtr<gfx::IResourceView> rtv = device->createTextureView(colorBuffer.get(), colorBufferViewDesc);
-        renderTargetViews.push_back(rtv);
-
-        // Create depth buffer (EXACT triangle example pattern)
-        gfx::ITextureResource::Desc depthBufferDesc;
-        depthBufferDesc.type = gfx::IResource::Type::Texture2D;
-        depthBufferDesc.size.width = swapchainDesc.width;
-        depthBufferDesc.size.height = swapchainDesc.height;
-        depthBufferDesc.size.depth = 1;
-        depthBufferDesc.format = gfx::Format::D32_FLOAT;
-        depthBufferDesc.defaultState = gfx::ResourceState::DepthWrite;
-        depthBufferDesc.allowedStates = gfx::ResourceStateSet(gfx::ResourceState::DepthWrite);
-        gfx::ClearValue depthClearValue = {};
-        depthBufferDesc.optimalClearValue = &depthClearValue;
-        ComPtr<gfx::ITextureResource> depthBufferResource = device->createTextureResource(depthBufferDesc, nullptr);
-
-        gfx::IResourceView::Desc depthBufferViewDesc;
-        memset(&depthBufferViewDesc, 0, sizeof(depthBufferViewDesc)); // Like triangle example
-        depthBufferViewDesc.format = gfx::Format::D32_FLOAT;
-        depthBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
-        depthBufferViewDesc.type = gfx::IResourceView::Type::DepthStencil;
-        ComPtr<gfx::IResourceView> dsv = device->createTextureView(depthBufferResource.get(), depthBufferViewDesc);
-
-        // Create framebuffer (EXACT triangle example pattern)
-        gfx::IFramebuffer::Desc framebufferDesc;
-        framebufferDesc.renderTargetCount = 1;
-        framebufferDesc.depthStencilView = dsv.get();
-        framebufferDesc.renderTargetViews = rtv.readRef();
-        framebufferDesc.layout = framebufferLayout;
-        ComPtr<gfx::IFramebuffer> framebuffer = device->createFramebuffer(framebufferDesc);
-        framebuffers.push_back(framebuffer);
-    }
-    
-    std::cout << "✅ RECREATE: Successfully created " << framebuffers.size() << " framebuffers" << std::endl;
+    // Use unified framebuffer creation method
+    createSwapchainFramebuffers();
 }
 
 void SlangDisplay::new_frame() {
@@ -372,29 +241,8 @@ void SlangDisplay::new_frame() {
         }
         io.Fonts->Build();
     }
-    
     // No backend-specific calls needed - ImGui_ImplSDL2_NewFrame() and ImGui::NewFrame() 
     // are called by the main application
-}
-
-void SlangDisplay::renderImGuiDrawData(gfx::ICommandBuffer* commandBuffer, gfx::IFramebuffer* framebuffer) {
-    ImDrawData* draw_data = ImGui::GetDrawData();
-    if (!draw_data || draw_data->CmdListsCount == 0) {
-        return; // No ImGui data to render
-    }
-
-    // TODO: For now, skip ImGui rendering to demonstrate unified code path
-    // This is a placeholder implementation for the unified approach
-    // Full implementation would create vertex/index buffers and render ImGui geometry
-    
-    // In future iteration, we would:
-    // 1. Create render pass layout for both Vulkan and D3D12
-    // 2. Create vertex/index buffers for ImGui geometry
-    // 3. Create graphics pipeline for ImGui rendering
-    // 4. Upload ImGui font texture via Slang GFX
-    // 5. Render each ImDrawList with appropriate draw calls
-    
-    // For now, this demonstrates the unified code structure
 }
 
 void SlangDisplay::display(RenderBackend* backend) {
@@ -422,16 +270,10 @@ void SlangDisplay::display(RenderBackend* backend) {
     if (frameCount <= 5 || frameCount % 100 == 0) {  // Reduce logging frequency
         std::cout << "Frame " << frameCount << " - Index: " << m_currentFrameIndex << std::endl;
     }
-    
-    // ===== CRITICAL DEBUG: Check values before crash =====
-    // std::cout << "DEBUG: m_currentFrameIndex = " << m_currentFrameIndex << std::endl;
-    // std::cout << "DEBUG: transientHeaps.size() = " << transientHeaps.size() << std::endl;
-    
+
     // Use proper frame-based buffer index
     size_t bufferIndex = m_currentFrameIndex % transientHeaps.size();
-    // std::cout << "DEBUG: calculated bufferIndex = " << bufferIndex << std::endl;
-    
-    // ===== CRITICAL DEBUG: Check transient heap before access =====
+
     if (bufferIndex >= transientHeaps.size()) {
         std::cerr << "❌ CRITICAL: bufferIndex " << bufferIndex << " >= transientHeaps.size() " << transientHeaps.size() << std::endl;
         return;
@@ -440,46 +282,33 @@ void SlangDisplay::display(RenderBackend* backend) {
         std::cerr << "❌ CRITICAL: transientHeaps[" << bufferIndex << "] is nullptr!" << std::endl;
         return;
     }
-    // std::cout << "DEBUG: About to call synchronizeAndReset()..." << std::endl;
-    
+
     // Reset the transient heap to prepare for new commands  
     transientHeaps[bufferIndex]->synchronizeAndReset();
-    // std::cout << "DEBUG: synchronizeAndReset() completed successfully" << std::endl;
-    
+
     // ===== PROPER GPU SYNCHRONIZATION: Wait for GPU to finish =====
     queue->waitOnHost();  // Proper GPU wait instead of arbitrary timing delay
-    // std::cout << "DEBUG: queue->waitOnHost() completed - GPU is synchronized" << std::endl;
     
     // Create command buffer using triangle example pattern
-    Slang::ComPtr<gfx::ICommandBuffer> commandBuffer = 
-        transientHeaps[bufferIndex]->createCommandBuffer();
-    // std::cout << "DEBUG: createCommandBuffer() completed" << std::endl;
-    
-    // STEP 1: Use render pass with automatic clearing (following triangle example pattern)
-    // ===== CRITICAL VALIDATION: Check all resources before encodeRenderCommands =====
-    // std::cout << "DEBUG: About to validate resources..." << std::endl;
+    Slang::ComPtr<gfx::ICommandBuffer> commandBuffer = transientHeaps[bufferIndex]->createCommandBuffer();
+
     if (!commandBuffer) {
         std::cerr << "❌ CRITICAL: Command buffer is null!" << std::endl;
         return;
     }
-    // std::cout << "DEBUG: commandBuffer validated OK" << std::endl;
     
     if (!renderPassLayout) {
         std::cerr << "❌ CRITICAL: RenderPassLayout is null!" << std::endl;
         return;
     }
-    // std::cout << "DEBUG: renderPassLayout validated OK" << std::endl;
     
     if (!framebuffers[m_currentFrameIndex]) {
         std::cerr << "❌ CRITICAL: Framebuffer[" << m_currentFrameIndex << "] is null!" << std::endl;
         return;
     }
-    // std::cout << "DEBUG: framebuffer validated OK" << std::endl;
-    
-    // std::cout << "DEBUG: About to call encodeRenderCommands()..." << std::endl;
+
     auto renderEncoder = commandBuffer->encodeRenderCommands(renderPassLayout, framebuffers[m_currentFrameIndex]);
-    // std::cout << "DEBUG: encodeRenderCommands() completed successfully!" << std::endl;
-    
+
     // Set viewport (following triangle example)
     gfx::Viewport viewport = {};
     viewport.maxZ = 1.0f;
@@ -517,27 +346,6 @@ void SlangDisplay::display(RenderBackend* backend) {
     }
 }
 
-void SlangDisplay::clearScreenToColor(gfx::ICommandBuffer* commandBuffer, 
-                                     float r, float g, float b, float a) {
-    if (m_currentFrameIndex < 0 || m_currentFrameIndex >= (int)framebuffers.size()) {
-        std::cerr << "❌ Invalid frame index for clearing: " << m_currentFrameIndex << std::endl;
-        return;
-    }
-
-    // 🎯 CRITICAL FIX: Use render encoder auto-clearing like triangle example
-    // Triangle example NEVER uses encodeResourceCommands() - this was causing state corruption!
-    std::cout << "🎯 RENDER ENCODER AUTO-CLEAR: Eliminating encodeResourceCommands() like triangle example" << std::endl;
-    
-    // Store clear values for render pass auto-clearing (like triangle example)
-    m_clearColor[0] = r;
-    m_clearColor[1] = g; 
-    m_clearColor[2] = b;
-    m_clearColor[3] = a;
-    m_shouldClearOnNextRender = true;
-    
-    std::cout << "✅ Clear values stored for auto-clearing: " << r << "," << g << "," << b << "," << a << std::endl;
-}
-
 // REMOVED: getCurrentCommandBuffer() - we create fresh command buffers each frame like triangle example
 
 gfx::IFramebuffer* SlangDisplay::getCurrentFramebuffer() {
@@ -545,12 +353,98 @@ gfx::IFramebuffer* SlangDisplay::getCurrentFramebuffer() {
 }
 
 // =============================================================================
+// UNIFIED FRAMEBUFFER CREATION HELPERS (Refactored from duplicated code)
+// =============================================================================
+
+// Create render target view with unified descriptor setup
+Slang::ComPtr<gfx::IResourceView> SlangDisplay::createRenderTargetView(gfx::ITextureResource* colorBuffer, gfx::Format format) {
+    gfx::IResourceView::Desc colorBufferViewDesc = {};
+    memset(&colorBufferViewDesc, 0, sizeof(colorBufferViewDesc)); // Like triangle example
+    colorBufferViewDesc.format = format; // Use actual format, not hardcoded!
+    colorBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
+    colorBufferViewDesc.type = gfx::IResourceView::Type::RenderTarget;
+    return device->createTextureView(colorBuffer, colorBufferViewDesc);
+}
+
+// Create depth buffer with unified configuration
+Slang::ComPtr<gfx::ITextureResource> SlangDisplay::createDepthBuffer(uint32_t width, uint32_t height) {
+    gfx::ITextureResource::Desc depthBufferDesc;
+    depthBufferDesc.type = gfx::IResource::Type::Texture2D;
+    depthBufferDesc.size.width = width;
+    depthBufferDesc.size.height = height;
+    depthBufferDesc.size.depth = 1;
+    depthBufferDesc.format = gfx::Format::D32_FLOAT;
+    depthBufferDesc.defaultState = gfx::ResourceState::DepthWrite;
+    depthBufferDesc.allowedStates = gfx::ResourceStateSet(gfx::ResourceState::DepthWrite);
+    gfx::ClearValue depthClearValue = {};
+    depthBufferDesc.optimalClearValue = &depthClearValue;
+    return device->createTextureResource(depthBufferDesc, nullptr);
+}
+
+// Create depth stencil view with unified configuration
+Slang::ComPtr<gfx::IResourceView> SlangDisplay::createDepthStencilView(uint32_t width, uint32_t height) {
+    auto depthBuffer = createDepthBuffer(width, height);
+    
+    gfx::IResourceView::Desc depthBufferViewDesc;
+    memset(&depthBufferViewDesc, 0, sizeof(depthBufferViewDesc)); // Like triangle example
+    depthBufferViewDesc.format = gfx::Format::D32_FLOAT;
+    depthBufferViewDesc.renderTarget.shape = gfx::IResource::Type::Texture2D;
+    depthBufferViewDesc.type = gfx::IResourceView::Type::DepthStencil;
+    return device->createTextureView(depthBuffer.get(), depthBufferViewDesc);
+}
+
+// Create framebuffer with unified descriptor
+Slang::ComPtr<gfx::IFramebuffer> SlangDisplay::createFramebuffer(gfx::IResourceView* rtv, gfx::IResourceView* dsv) {
+    gfx::IFramebuffer::Desc framebufferDesc;
+    framebufferDesc.renderTargetCount = 1;
+    framebufferDesc.depthStencilView = dsv;
+    framebufferDesc.renderTargetViews = &rtv;
+    framebufferDesc.layout = framebufferLayout;
+    return device->createFramebuffer(framebufferDesc);
+}
+
+// Create single framebuffer for given image index
+void SlangDisplay::createSingleFramebuffer(uint32_t imageIndex, gfx::Format format, uint32_t width, uint32_t height) {
+    // Get swapchain image
+    ComPtr<gfx::ITextureResource> colorBuffer;
+    swapchain->getImage(imageIndex, colorBuffer.writeRef());
+    
+    // Create render target view with ACTUAL format (CRITICAL FIX)
+    auto rtv = createRenderTargetView(colorBuffer.get(), format);
+    renderTargetViews.push_back(rtv);
+    
+    // Create depth stencil view with unified configuration
+    auto dsv = createDepthStencilView(width, height);
+    
+    // Create framebuffer with unified descriptor
+    auto framebuffer = createFramebuffer(rtv.get(), dsv.get());
+    framebuffers.push_back(framebuffer);
+}
+
+// Unified framebuffer creation method that both constructor and resize can call
+void SlangDisplay::createSwapchainFramebuffers() {
+    const auto& swapchainDesc = swapchain->getDesc();
+    uint32_t imageCount = swapchainDesc.imageCount;
+    gfx::Format format = swapchainDesc.format;
+    
+    // Clear and reserve (common pattern)
+    framebuffers.clear();
+    renderTargetViews.clear();
+    framebuffers.reserve(imageCount);
+    renderTargetViews.reserve(imageCount);
+    
+    // Unified framebuffer creation loop
+    for (uint32_t i = 0; i < imageCount; ++i) {
+        createSingleFramebuffer(i, format, swapchainDesc.width, swapchainDesc.height);
+    }
+}
+
+// =============================================================================
 // SHADER VALIDATION IMPLEMENTATION (Standard Complexity)
 // =============================================================================
 
 void SlangDisplay::initShaderValidation() {
-    std::cout << "🚀 Phase S1.3: Starting Slang shader compilation..." << std::endl;
-    
+
     // Get device info for API-specific handling
     const gfx::DeviceInfo& deviceInfo = device->getDeviceInfo();
     gfx::DeviceType deviceType = deviceInfo.deviceType;
@@ -558,18 +452,8 @@ void SlangDisplay::initShaderValidation() {
     // Load and compile Slang shader using proper cross-platform approach
     if (!loadSlangShader(deviceType)) {
         // Initialize fallback validation data
-        auto now = std::chrono::high_resolution_clock::now();
-        m_validation.startTime = std::chrono::duration<double>(now.time_since_epoch()).count();
-        m_validation.currentShader = 0;
-        m_validation.validationActive = true;
         return;
     }
-    
-    // Initialize validation data for shader rendering
-    auto now = std::chrono::high_resolution_clock::now();
-    m_validation.startTime = std::chrono::duration<double>(now.time_since_epoch()).count();
-    m_validation.currentShader = 0;
-    m_validation.validationActive = true;
 }
 
 bool SlangDisplay::loadSlangShader(gfx::DeviceType deviceType) {
@@ -669,120 +553,37 @@ bool SlangDisplay::loadSlangShader(gfx::DeviceType deviceType) {
     
     if (SLANG_FAILED(programResult) || !m_validation.validationShaderProgram) {
         // Detailed error analysis for D3D12
-#ifndef USE_VULKAN
-        if (programResult == -2147467259) { // E_FAIL
-            // Fallback approach: Try creating program with minimal descriptor
-            gfx::IShaderProgram::Desc simplifiedDesc = {};
-            simplifiedDesc.slangGlobalScope = linkedProgram.get();
+// #ifndef USE_VULKAN
+//         if (programResult == -2147467259) { // E_FAIL
+//             // Fallback approach: Try creating program with minimal descriptor
+//             gfx::IShaderProgram::Desc simplifiedDesc = {};
+//             simplifiedDesc.slangGlobalScope = linkedProgram.get();
             
-            ComPtr<ISlangBlob> fallbackDiagnostics;
-            SlangResult fallbackResult = device->createProgram(
-                simplifiedDesc,
-                m_validation.validationShaderProgram.writeRef(),
-                fallbackDiagnostics.writeRef()
-            );
+//             ComPtr<ISlangBlob> fallbackDiagnostics;
+//             SlangResult fallbackResult = device->createProgram(
+//                 simplifiedDesc,
+//                 m_validation.validationShaderProgram.writeRef(),
+//                 fallbackDiagnostics.writeRef()
+//             );
             
-            if (SLANG_SUCCEEDED(fallbackResult) && m_validation.validationShaderProgram) {
-                return true;
-            } else {
-                return false;
-            }
-        } else {
-            return false;
-        }
-#else
-        return false;
-#endif
+//             if (SLANG_SUCCEEDED(fallbackResult) && m_validation.validationShaderProgram) {
+//                 return true;
+//             } else {
+//                 return false;
+//             }
+//         } else {
+//             return false;
+//         }
+// #else
+//         return false;
+// #endif
     }
     
     return true;
 }
 
-
-
-void SlangDisplay::runShaderValidation() {
-    if (!m_validation.validationActive) {
-        return;
-    }
-    
-    // If we have a shader program, use it; otherwise fall back to animated clearing
-    if (m_validation.validationShaderProgram) {
-        // TODO: Implement actual shader rendering here
-        // For now, just clear to a solid color to indicate shader is loaded
-        // NOTE: Temporarily disabled - need command buffer parameter when we re-enable
-        // auto* commandBuffer = getCurrentCommandBuffer();  // REMOVED - no longer stored
-        // clearScreenToColor(commandBuffer, 0.0f, 0.8f, 0.0f, 1.0f); // Green = success
-        return;
-    }
-    
-    // Fallback: animated clearing
-    // Update time for animation
-    auto now = std::chrono::high_resolution_clock::now();
-    double currentTime = std::chrono::duration<double>(now.time_since_epoch()).count();
-    float deltaTime = static_cast<float>(currentTime - m_validation.startTime);
-    
-    // Switch animation modes every 4 seconds
-    int newMode = static_cast<int>(deltaTime / 4.0) % 3;
-    if (newMode != m_validation.currentShader) {
-        m_validation.currentShader = newMode;
-    }
-    
-    // Get current command buffer for animated clearing
-    // NOTE: Temporarily disabled - need command buffer parameter when we re-enable
-    // auto* commandBuffer = getCurrentCommandBuffer();  // REMOVED - no longer stored
-    
-    // TODO: Re-enable animated clearing when command buffer is passed as parameter
-    return;
-    
-    // Implement different animation modes
-    float r, g, b;
-    switch (m_validation.currentShader) {
-        case 0: // Rainbow mode
-        {
-            float hue = fmod(deltaTime * 0.5f, 1.0f) * 6.28318f; // 2π
-            r = 0.5f + 0.5f * cosf(hue);
-            g = 0.5f + 0.5f * cosf(hue + 2.094f); // 2π/3
-            b = 0.5f + 0.5f * cosf(hue + 4.189f); // 4π/3
-            break;
-        }
-        case 1: // Pulse mode
-        {
-            float pulse = 0.3f + 0.7f * (0.5f + 0.5f * sinf(deltaTime * 2.0f));
-            r = 0.8f * pulse;
-            g = 0.2f * pulse;
-            b = 0.4f * pulse;
-            break;
-        }
-        case 2: // Wave mode
-        {
-            r = 0.5f + 0.3f * sinf(deltaTime * 1.2f);
-            g = 0.5f + 0.3f * sinf(deltaTime * 1.7f + 1.0f);
-            b = 0.5f + 0.3f * sinf(deltaTime * 0.8f + 2.0f);
-            break;
-        }
-        default:
-            r = g = b = 0.5f;
-    }
-    
-    // Apply animated clearing with validation colors
-    // NOTE: Temporarily disabled - need command buffer parameter when we re-enable
-    // clearScreenToColor(commandBuffer, r, g, b, 1.0f);  // REMOVED - no commandBuffer variable
-}
-
-void SlangDisplay::updateTimeBuffer(float time) {
-    // Simplified for animated clear mode - no buffer updates needed
-    // Time is calculated directly in runShaderValidation()
-}
-
 void SlangDisplay::cleanupShaderValidation() {
-    m_validation.validationShaderProgram = nullptr;
-    m_validation.rainbowShader = nullptr;
-    m_validation.pulseShader = nullptr;
-    m_validation.rainbowPipeline = nullptr;
-    m_validation.pulsePipeline = nullptr;
-    m_validation.timeBuffer = nullptr;
-    m_validation.timeBufferView = nullptr;
-    m_validation.validationActive = false;
+
 }
 
 // =============================================================================
@@ -901,7 +702,6 @@ void SlangDisplay::renderTriangle(gfx::IRenderCommandEncoder* renderEncoder) {
 }
 
 void SlangDisplay::cleanupTriangleRendering() {
-    m_triangle.triangleShaderProgram = nullptr;
     m_triangle.trianglePipeline = nullptr;
     m_triangle.triangleVertexBuffer = nullptr;
     m_triangle.triangleUniformBuffer = nullptr;
