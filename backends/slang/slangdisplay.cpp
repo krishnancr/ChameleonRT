@@ -1,4 +1,7 @@
 #include "slangdisplay.h"
+#if CRT_ENABLE_SLANG_IMGUI_RENDERER
+#include "SlangImGuiRenderer.h"
+#endif
 #include <slang.h>
 #include <slang-gfx.h>
 #include <SDL_syswm.h>
@@ -147,6 +150,21 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     
     // Initialize triangle rendering (Step 3: following triangle example pattern)
     initTriangleRendering();
+
+#if CRT_ENABLE_SLANG_IMGUI_RENDERER
+    {
+        SlangImGuiRenderer::InitializeDesc desc;
+        desc.device = device.get();
+        desc.framebufferLayout = framebufferLayout.get();
+        desc.renderPassLayout = renderPassLayout.get();
+
+        m_imguiRenderer = std::make_unique<SlangImGuiRenderer>();
+        m_imguiRendererInitialized = m_imguiRenderer->initialize(desc);
+        if (!m_imguiRendererInitialized) {
+            std::cout << "[SlangDisplay] Slang ImGui renderer stub active; falling back to no-op" << std::endl;
+        }
+    }
+#endif
 }
 
 SlangDisplay::~SlangDisplay() {
@@ -160,6 +178,14 @@ SlangDisplay::~SlangDisplay() {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 #endif
     }
+
+#if CRT_ENABLE_SLANG_IMGUI_RENDERER
+    if (m_imguiRenderer) {
+        m_imguiRenderer->shutdown();
+        m_imguiRenderer.reset();
+    }
+    m_imguiRendererInitialized = false;
+#endif
     
     // Clear our transient heaps (no command buffers to clear - created fresh each frame)
     transientHeaps.clear();
@@ -318,15 +344,21 @@ void SlangDisplay::display(RenderBackend* backend) {
     
     // STEP 3: Render triangle geometry (following triangle example pattern)
     if (m_triangle.triangleInitialized) {
-        renderTriangle(renderEncoder);
+        // Temporarily disable triangle rendering to isolate ImGui output during debugging.
+        // renderTriangle(renderEncoder);
     }
+    
+    ImGui::Render();
+
+#if CRT_ENABLE_SLANG_IMGUI_RENDERER
+    if (m_imguiRenderer) {
+        m_imguiRenderer->render(ImGui::GetDrawData(), renderEncoder);
+    }
+#endif
     
     // End render commands
     renderEncoder->endEncoding();
-    
-    // STEP 2: End ImGui frame (prevents accumulation)
-    ImGui::Render();
-    
+
     // Execute and present
     commandBuffer->close();
     queue->executeCommandBuffer(commandBuffer);  // Single command buffer like triangle example
@@ -345,8 +377,6 @@ void SlangDisplay::display(RenderBackend* backend) {
         throw;
     }
 }
-
-// REMOVED: getCurrentCommandBuffer() - we create fresh command buffers each frame like triangle example
 
 gfx::IFramebuffer* SlangDisplay::getCurrentFramebuffer() {
     return framebuffers[m_currentFrameIndex].get();

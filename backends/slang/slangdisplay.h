@@ -5,6 +5,7 @@
 #include <string>
 #include <slang-com-ptr.h>
 #include <vector>
+#include <memory>
 
 #ifdef USE_VULKAN
 #include <vulkan/vulkan.h>
@@ -14,6 +15,10 @@
 #include <dxgiformat.h>
 #include <wrl/client.h>
 #endif
+#endif
+
+#if CRT_ENABLE_SLANG_IMGUI_RENDERER
+class SlangImGuiRenderer;
 #endif
 
 class SlangDisplay : public Display {
@@ -48,6 +53,11 @@ public:
 #ifdef _WIN32
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> imgui_desc_heap; // D3D12 legacy - to be removed
 #endif
+#endif
+
+#if CRT_ENABLE_SLANG_IMGUI_RENDERER
+    std::unique_ptr<class SlangImGuiRenderer> m_imguiRenderer;
+    bool m_imguiRendererInitialized = false;
 #endif
     
 private:

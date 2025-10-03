@@ -32,6 +32,8 @@ if(WIN32 AND NOT (DEFINED USE_VULKAN AND USE_VULKAN))
 endif()
 
 set(CRT_SLANG_SOURCES
+    SlangImGuiRenderer.cpp
+    SlangImGuiRenderer.h
     render_slang.cpp
     render_slang.h
     slangdisplay.cpp
@@ -57,9 +59,15 @@ target_include_directories(crt_slang
         ${Slang_INCLUDE_DIRS}
 )
 
+if(DEFINED Slang_ROOT)
+    target_include_directories(crt_slang PRIVATE ${Slang_ROOT}/tools)
+endif()
+
 target_link_libraries(crt_slang PRIVATE util display Slang::Slang)
 # Link to the GFX library which provides gfxCreateDevice
 target_link_libraries(crt_slang PRIVATE Slang::GFX)
+
+target_compile_definitions(crt_slang PRIVATE CRT_ENABLE_SLANG_IMGUI_RENDERER=1)
 
 # Add conditional dependencies based on USE_VULKAN define
 if(DEFINED USE_VULKAN AND USE_VULKAN)
