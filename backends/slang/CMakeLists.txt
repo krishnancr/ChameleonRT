@@ -39,6 +39,9 @@ set(CRT_SLANG_SOURCES
     slangdisplay.cpp
     slangdisplay.h
     render_slang_plugin.cpp
+    # Vendored Slang gfx-util for ShaderCursor
+    vendor/gfx-util/shader-cursor.cpp
+    vendor/gfx-util/shader-cursor.h
 )
 
 # Note: ImGui backend implementations removed - using unified Slang GFX rendering
@@ -55,6 +58,7 @@ target_include_directories(crt_slang
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor  # For vendored gfx-util/shader-cursor.h
         ${PROJECT_SOURCE_DIR}
         ${Slang_INCLUDE_DIRS}
 )

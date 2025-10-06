@@ -11,6 +11,9 @@
 #include <iostream>
 #include <string>
 
+// Use official Slang gfx-util ShaderCursor (vendored from tools/gfx-util)
+#include "gfx-util/shader-cursor.h"
+
 namespace {
 
 constexpr char kImGuiShaderSource[] = R"(
@@ -29,29 +32,32 @@ struct ImGuiVSOutput
     float4 color : COLOR0;
 };
 
-cbuffer ImGuiConstants : register(b0)
+// Unified uniform structure (like Slang autodiff-texture example)
+// This ensures proper descriptor set layout on Vulkan
+struct ImGuiUniforms
 {
-    float4x4 u_projection;
+    float4x4 projection;
+    Texture2D fontTexture;
+    SamplerState fontSampler;
 };
+
+ConstantBuffer<ImGuiUniforms> uniforms;
 
 [shader("vertex")]
 ImGuiVSOutput vertexMain(ImGuiVSInput input)
 {
     ImGuiVSOutput output;
     float4 localPosition = float4(input.position, 0.0, 1.0);
-    output.position = mul(localPosition, u_projection);
+    output.position = mul(localPosition, uniforms.projection);
     output.uv = input.uv;
     output.color = input.color;
     return output;
 }
 
-Texture2D u_fontTexture : register(t0);
-SamplerState u_fontSampler : register(s0);
-
 [shader("fragment")]
 float4 fragmentMain(ImGuiVSOutput input) : SV_Target
 {
-    float4 fontSample = u_fontTexture.Sample(u_fontSampler, input.uv);
+    float4 fontSample = uniforms.fontTexture.Sample(uniforms.fontSampler, input.uv);
     return input.color * fontSample;
 }
 
@@ -73,123 +79,7 @@ void printDiagnostics(const char* label, slang::IBlob* diagnostics)
     std::cout << "[SlangImGuiRenderer] " << label << "\n" << message << std::endl;
 }
 
-struct ShaderCursorHelper
-{
-    gfx::IShaderObject* baseObject = nullptr;
-    slang::TypeLayoutReflection* typeLayout = nullptr;
-    gfx::ShaderOffset offset = {};
-
-    ShaderCursorHelper() = default;
-
-    explicit ShaderCursorHelper(gfx::IShaderObject* object)
-        : baseObject(object)
-        , typeLayout(object ? object->getElementTypeLayout() : nullptr)
-    {
-    }
-
-    bool isValid() const { return baseObject != nullptr && typeLayout != nullptr; }
-
-    ShaderCursorHelper getField(const char* name) const
-    {
-        ShaderCursorHelper result;
-        if (!isValid() || !name)
-        {
-            return result;
-        }
-
-        switch (typeLayout->getKind())
-        {
-        case slang::TypeReflection::Kind::Struct:
-        {
-            SlangInt fieldIndex = typeLayout->findFieldIndexByName(name, nullptr);
-            if (fieldIndex < 0)
-            {
-                break;
-            }
-
-            slang::VariableLayoutReflection* fieldLayout =
-                typeLayout->getFieldByIndex(static_cast<unsigned int>(fieldIndex));
-            if (!fieldLayout)
-            {
-                break;
-            }
-
-            result.baseObject = baseObject;
-            result.typeLayout = fieldLayout->getTypeLayout();
-            result.offset = offset;
-            result.offset.uniformOffset += fieldLayout->getOffset();
-            result.offset.bindingRangeIndex += static_cast<gfx::GfxIndex>(
-                typeLayout->getFieldBindingRangeOffset(fieldIndex));
-            result.offset.bindingArrayIndex = offset.bindingArrayIndex;
-            return result;
-        }
-        case slang::TypeReflection::Kind::ConstantBuffer:
-        case slang::TypeReflection::Kind::ParameterBlock:
-        {
-            Slang::ComPtr<gfx::IShaderObject> subObject;
-            if (SLANG_SUCCEEDED(baseObject->getObject(offset, subObject.writeRef())) && subObject)
-            {
-                ShaderCursorHelper subCursor(subObject);
-                ShaderCursorHelper found = subCursor.getField(name);
-                if (found.isValid())
-                {
-                    return found;
-                }
-            }
-            break;
-        }
-        default:
-            break;
-        }
-
-        const gfx::GfxIndex entryPointCount =
-            baseObject ? static_cast<gfx::GfxIndex>(baseObject->getEntryPointCount()) : 0;
-        for (gfx::GfxIndex entryIndex = 0; entryIndex < entryPointCount; ++entryIndex)
-        {
-            Slang::ComPtr<gfx::IShaderObject> entryPoint;
-            if (SLANG_SUCCEEDED(baseObject->getEntryPoint(entryIndex, entryPoint.writeRef())) &&
-                entryPoint)
-            {
-                ShaderCursorHelper entryCursor(entryPoint);
-                ShaderCursorHelper found = entryCursor.getField(name);
-                if (found.isValid())
-                {
-                    return found;
-                }
-            }
-        }
-
-        return result;
-    }
-
-    SlangResult setData(const void* data, size_t sizeInBytes) const
-    {
-        if (!isValid())
-        {
-            return SLANG_E_INVALID_ARG;
-        }
-        return baseObject->setData(offset, data, sizeInBytes);
-    }
-
-    SlangResult setResource(gfx::IResourceView* resource) const
-    {
-        if (!isValid())
-        {
-            return SLANG_E_INVALID_ARG;
-        }
-        return baseObject->setResource(offset, resource);
-    }
-
-    SlangResult setSampler(gfx::ISamplerState* sampler) const
-    {
-        if (!isValid())
-        {
-            return SLANG_E_INVALID_ARG;
-        }
-        return baseObject->setSampler(offset, sampler);
-    }
-
-};
+// NOTE: Custom ShaderCursorHelper removed - now using official gfx::ShaderCursor from vendor/gfx-util/
 
 void logShaderObjectLayout(gfx::IShaderObject* rootObject)
 {
@@ -461,10 +351,12 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
         m_loggedBindingLayout = true;
     }
 
-    ShaderCursorHelper rootCursor(rootObject);
+    // Use official gfx::ShaderCursor (vendored from Slang tools/gfx-util/)
+    gfx::ShaderCursor rootCursor(rootObject);
 
-    ShaderCursorHelper constantsCursor = rootCursor.getField("ImGuiConstants");
-    ShaderCursorHelper projectionCursor = constantsCursor.getField("u_projection");
+    // Match new shader structure: ConstantBuffer<ImGuiUniforms> uniforms
+    gfx::ShaderCursor uniformsCursor = rootCursor["uniforms"];
+    gfx::ShaderCursor projectionCursor = uniformsCursor["projection"];
     const bool projectionCursorValid = projectionCursor.isValid();
     bool projectionBound = false;
     SlangResult projectionResult = SLANG_E_INVALID_ARG;
@@ -472,8 +364,8 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
     SlangMatrixLayoutMode projectionMatrixLayout = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
     bool projectionUsesRowMajor = false;
     if (projectionCursorValid) {
-        if (projectionCursor.typeLayout) {
-            projectionMatrixLayout = projectionCursor.typeLayout->getMatrixLayoutMode();
+        if (projectionCursor.getTypeLayout()) {
+            projectionMatrixLayout = projectionCursor.getTypeLayout()->getMatrixLayoutMode();
         }
         projectionUsesRowMajor = projectionMatrixLayout == SLANG_MATRIX_LAYOUT_ROW_MAJOR;
         projectionData = projectionUsesRowMajor
@@ -490,11 +382,11 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
             m_loggedProjectionLayout = true;
         }
         if (!projectionBound && !m_renderWarned) {
-            std::cout << "[SlangImGuiRenderer] setData for u_projection failed: " << projectionResult
+            std::cout << "[SlangImGuiRenderer] setData for uniforms.projection failed: " << projectionResult
                       << std::endl;
         }
     } else if (!m_renderWarned) {
-        std::cout << "[SlangImGuiRenderer] Unable to locate ImGuiConstants.u_projection binding" << std::endl;
+        std::cout << "[SlangImGuiRenderer] Unable to locate uniforms.projection binding" << std::endl;
     }
 
     if (projectionData && m_constantBuffer) {
@@ -511,8 +403,9 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
         }
     }
 
-    ShaderCursorHelper textureCursor = rootCursor.getField("u_fontTexture");
-    ShaderCursorHelper samplerCursor = rootCursor.getField("u_fontSampler");
+    // Bind texture and sampler within uniforms struct
+    gfx::ShaderCursor textureCursor = uniformsCursor["fontTexture"];
+    gfx::ShaderCursor samplerCursor = uniformsCursor["fontSampler"];
 
     const bool samplerCursorValid = samplerCursor.isValid();
     bool samplerBound = false;
@@ -524,7 +417,7 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
             std::cout << "[SlangImGuiRenderer] setSampler failed: " << samplerResult << std::endl;
         }
     } else if (!samplerCursorValid && !m_renderWarned) {
-        std::cout << "[SlangImGuiRenderer] Unable to locate u_fontSampler binding" << std::endl;
+        std::cout << "[SlangImGuiRenderer] Unable to locate uniforms.fontSampler binding" << std::endl;
     }
 
     const bool textureCursorValid = textureCursor.isValid();
@@ -586,7 +479,7 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
                     }
                     currentTexture = textureView;
                 } else if (!m_renderWarned) {
-                    std::cout << "[SlangImGuiRenderer] Unable to locate u_fontTexture binding" << std::endl;
+                    std::cout << "[SlangImGuiRenderer] Unable to locate uniforms.fontTexture binding" << std::endl;
                 }
             }
 
@@ -657,13 +550,13 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
     }
 
     if (!m_loggedBindingResults) {
-    std::cout << "[SlangImGuiRenderer] Binding summary: ImGuiConstants.u_projection="
+    std::cout << "[SlangImGuiRenderer] Binding summary: uniforms.projection="
           << (projectionCursorValid ? (projectionBound ? "ok" : "set-failed") : "missing")
           << " (result=" << projectionResult << ")"
-          << ", u_fontSampler="
+          << ", uniforms.fontSampler="
                   << (samplerCursorValid ? (samplerBound ? "ok" : "set-failed") : "missing")
                   << " (result=" << samplerResult << ")"
-                  << ", u_fontTexture="
+                  << ", uniforms.fontTexture="
                   << (textureCursorValid
                           ? (textureBound ? "ok" : (attemptedTextureBinding ? "set-failed" : "not-attempted"))
                           : "missing")

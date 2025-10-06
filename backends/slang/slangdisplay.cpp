@@ -344,8 +344,7 @@ void SlangDisplay::display(RenderBackend* backend) {
     
     // STEP 3: Render triangle geometry (following triangle example pattern)
     if (m_triangle.triangleInitialized) {
-        // Temporarily disable triangle rendering to isolate ImGui output during debugging.
-        // renderTriangle(renderEncoder);
+        renderTriangle(renderEncoder);
     }
     
     ImGui::Render();

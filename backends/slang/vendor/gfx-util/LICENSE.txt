@@ -1,0 +1,13 @@
+Vendored from Slang Project
+==========================
+
+These files (shader-cursor.h, shader-cursor.cpp) are vendored from the Slang project:
+- Project: https://github.com/shader-slang/slang
+- Original location: tools/gfx-util/
+- License: Apache 2.0 with LLVM exception
+- Copyright: Slang contributors
+
+Full license text: https://github.com/shader-slang/slang/blob/master/LICENSE
+
+These files are internal utilities used by Slang examples but not part of the public API.
+They are included here to provide a clean shader parameter binding interface.
