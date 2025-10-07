@@ -4,14 +4,11 @@
 #include <cstring>
 
 RenderSlang::RenderSlang() : display(nullptr) {
-    std::cout << "[RenderSlang] Constructor\n";
 }
 
 RenderSlang::~RenderSlang() {
-    // Cleanup
     cpu_image.clear();
     fb_width = fb_height = 0;
-    std::cout << "[RenderSlang] Destructor complete\n";
 }
 
 std::string RenderSlang::name() {
@@ -19,8 +16,6 @@ std::string RenderSlang::name() {
 }
 
 void RenderSlang::initialize(const int fb_width, const int fb_height) {
-    std::cout << "[RenderSlang] Initialize " << fb_width << "x" << fb_height << "\n";
-    
     this->fb_width = fb_width;
     this->fb_height = fb_height;
     
@@ -32,12 +27,10 @@ void RenderSlang::initialize(const int fb_width, const int fb_height) {
     for (auto& pixel : img) {
         pixel = red_color;
     }
-    
-    std::cout << "[RenderSlang] Initialized successfully\n";
 }
 
 void RenderSlang::set_scene(const Scene &scene) {
-    std::cout << "[RenderSlang] Set scene - " << scene.meshes.size() << " meshes\n";
+    // Scene data will be used when ray tracing is implemented
 }
 
 RenderStats RenderSlang::render(const glm::vec3 &pos,

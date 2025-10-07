@@ -33,7 +33,7 @@ struct ImGuiVSOutput
 };
 
 // Unified uniform structure (like Slang autodiff-texture example)
-// This ensures proper descriptor set layout on Vulkan
+// This ensures proper descriptor set layout for both D3D12 and Vulkan
 struct ImGuiUniforms
 {
     float4x4 projection;
@@ -65,81 +65,7 @@ float4 fragmentMain(ImGuiVSOutput input) : SV_Target
 
 static const char* kImGuiEntryPoints[] = {"vertexMain", "fragmentMain"};
 
-void printDiagnostics(const char* label, slang::IBlob* diagnostics)
-{
-    if (!diagnostics || diagnostics->getBufferSize() == 0)
-    {
-        return;
-    }
-
-    const std::string message(
-        static_cast<const char*>(diagnostics->getBufferPointer()),
-        diagnostics->getBufferSize());
-
-    std::cout << "[SlangImGuiRenderer] " << label << "\n" << message << std::endl;
-}
-
-// NOTE: Custom ShaderCursorHelper removed - now using official gfx::ShaderCursor from vendor/gfx-util/
-
-void logShaderObjectLayout(gfx::IShaderObject* rootObject)
-{
-    if (!rootObject)
-    {
-        return;
-    }
-
-    slang::TypeLayoutReflection* layout = rootObject->getElementTypeLayout();
-    if (!layout)
-    {
-        std::cout << "[SlangImGuiRenderer] Root shader object has no layout" << std::endl;
-        return;
-    }
-
-    std::cout << "[SlangImGuiRenderer] Root layout kind=" << static_cast<int>(layout->getKind())
-              << ", fields=" << layout->getFieldCount()
-              << ", bindingRanges=" << layout->getBindingRangeCount() << std::endl;
-
-    const SlangInt fieldCount = layout->getFieldCount();
-    for (SlangInt i = 0; i < fieldCount; ++i)
-    {
-        slang::VariableLayoutReflection* fieldLayout = layout->getFieldByIndex(static_cast<unsigned int>(i));
-        if (!fieldLayout)
-        {
-            continue;
-        }
-
-        slang::TypeLayoutReflection* fieldTypeLayout = fieldLayout->getTypeLayout();
-        const char* name = fieldLayout->getName();
-        const slang::ParameterCategory category = fieldLayout->getCategory();
-        const size_t uniformOffset = fieldLayout->getOffset(category);
-        const SlangInt bindingRangeOffset = layout->getFieldBindingRangeOffset(i);
-        const unsigned bindingIndex = fieldLayout->getBindingIndex();
-        size_t bindingSpace = 0;
-        if (category != slang::ParameterCategory::None)
-        {
-            bindingSpace = static_cast<size_t>(fieldLayout->getBindingSpace(category));
-        }
-
-    std::cout << "    Field[" << i << "] name='" << (name ? name : "<unnamed>")
-          << "' kind=" << (fieldTypeLayout ? static_cast<int>(fieldTypeLayout->getKind()) : -1)
-                  << " category=" << static_cast<int>(category)
-                  << " uniformOffset=" << uniformOffset
-                  << " bindingRangeOffset=" << bindingRangeOffset
-                  << " bindingIndex=" << bindingIndex
-                  << " bindingSpace=" << bindingSpace
-                  << std::endl;
-    }
-
-    const SlangInt bindingRangeCount = layout->getBindingRangeCount();
-    for (SlangInt i = 0; i < bindingRangeCount; ++i)
-    {
-        const slang::BindingType type = layout->getBindingRangeType(i);
-        const SlangInt count = layout->getBindingRangeBindingCount(i);
-        std::cout << "    BindingRange[" << i << "] type=" << static_cast<int>(type)
-                  << " count=" << count
-                  << std::endl;
-    }
-}
+// Debugging helper functions removed for production build
 
 } // namespace
 
@@ -153,12 +79,10 @@ bool SlangImGuiRenderer::initialize(const InitializeDesc& desc) {
     shutdown();
 
     if (!desc.device) {
-        std::cout << "[SlangImGuiRenderer] initialize() missing gfx device; returning false" << std::endl;
         return false;
     }
 
     if (!desc.framebufferLayout) {
-        std::cout << "[SlangImGuiRenderer] initialize() missing framebuffer layout; returning false" << std::endl;
         return false;
     }
 
@@ -167,38 +91,34 @@ bool SlangImGuiRenderer::initialize(const InitializeDesc& desc) {
     m_renderPassLayout = desc.renderPassLayout;
 
     if (!createShaderProgram()) {
-        std::cout << "[SlangImGuiRenderer] Failed to create shader program; renderer inactive" << std::endl;
+        std::cerr << "[SlangImGuiRenderer] ERROR: Failed to create shader program" << std::endl;
         shutdown();
         return false;
     }
 
     if (!createInputLayout()) {
-        std::cout << "[SlangImGuiRenderer] Failed to create input layout; renderer inactive" << std::endl;
+        std::cerr << "[SlangImGuiRenderer] ERROR: Failed to create input layout" << std::endl;
         shutdown();
         return false;
     }
 
     if (!createPipelineState()) {
-        std::cout << "[SlangImGuiRenderer] Failed to create pipeline state; renderer inactive" << std::endl;
+        std::cerr << "[SlangImGuiRenderer] ERROR: Failed to create pipeline state" << std::endl;
         shutdown();
         return false;
     }
 
     if (!initializeConstantBuffer()) {
-        std::cout << "[SlangImGuiRenderer] Failed to create constant buffer; renderer inactive" << std::endl;
+        std::cerr << "[SlangImGuiRenderer] ERROR: Failed to create constant buffer" << std::endl;
         shutdown();
         return false;
     }
-
-    std::cout << "[SlangImGuiRenderer] Stage 3 buffer scaffolding ready; upload path active while rendering remains stubbed" << std::endl;
 
     if (!createFontResources()) {
-        std::cout << "[SlangImGuiRenderer] Failed to upload ImGui font atlas; renderer inactive" << std::endl;
+        std::cerr << "[SlangImGuiRenderer] ERROR: Failed to create font resources" << std::endl;
         shutdown();
         return false;
     }
-
-    std::cout << "[SlangImGuiRenderer] Stage 4 font atlas uploaded; sampler ready while draw encoding remains pending" << std::endl;
 
     m_initialized = true;
     m_renderWarned = false;
@@ -213,6 +133,8 @@ bool SlangImGuiRenderer::initialize(const InitializeDesc& desc) {
     m_loggedSourceIndexSamples = false;
     m_loggedProjectionMatrix = false;
     m_loggedProjectionLayout = false;
+    
+    std::cout << "[SlangImGuiRenderer] Initialization successful" << std::endl;
     return true;
 }
 
@@ -262,17 +184,15 @@ void SlangImGuiRenderer::shutdown() {
 void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandEncoder* renderEncoder) {
     if (!m_device || !m_initialized || !m_pipelineState) {
         if (!m_renderWarned) {
-            std::cout << "[SlangImGuiRenderer] render() skipped (renderer inactive)" << std::endl;
+            std::cerr << "[SlangImGuiRenderer] ERROR: Renderer not initialized (device=" 
+                      << (m_device ? "ok" : "null") << " initialized=" << m_initialized 
+                      << " pipeline=" << (m_pipelineState ? "ok" : "null") << ")" << std::endl;
             m_renderWarned = true;
         }
         return;
     }
 
     if (!renderEncoder) {
-        if (!m_renderWarned) {
-            std::cout << "[SlangImGuiRenderer] render() missing command encoder; skipping draw" << std::endl;
-            m_renderWarned = true;
-        }
         return;
     }
 
@@ -285,46 +205,19 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
     const size_t indexBytes = static_cast<size_t>(drawData->TotalIdxCount) * sizeof(ImDrawIdx);
 
     if (!ensureVertexBufferCapacity(vertexBytes) || !ensureIndexBufferCapacity(indexBytes)) {
-        std::cout << "[SlangImGuiRenderer] Unable to ensure buffer capacity; skipping draw upload" << std::endl;
         return;
     }
 
     if (!uploadDrawData(drawData)) {
-        std::cout << "[SlangImGuiRenderer] Failed to upload ImGui draw data; skipping draw" << std::endl;
         return;
     }
 
     if (!createFontResources()) {
-        std::cout << "[SlangImGuiRenderer] Font resources unavailable; skipping draw" << std::endl;
         return;
     }
 
     if (!updateProjectionConstants(drawData)) {
-        std::cout << "[SlangImGuiRenderer] Failed to update projection constants; skipping draw" << std::endl;
         return;
-    }
-
-    if (!m_loggedProjectionSample) {
-        const float samplePos[4] = {
-            drawData->DisplayPos.x + drawData->DisplaySize.x * 0.5f,
-            drawData->DisplayPos.y + drawData->DisplaySize.y * 0.5f,
-            0.0f,
-            1.0f};
-
-        float clip[4] = {};
-        for (int col = 0; col < 4; ++col) {
-            clip[col] =
-                samplePos[0] * m_projectionMatrix[0 * 4 + col] +
-                samplePos[1] * m_projectionMatrix[1 * 4 + col] +
-                samplePos[2] * m_projectionMatrix[2 * 4 + col] +
-                samplePos[3] * m_projectionMatrix[3 * 4 + col];
-        }
-        float ndcX = clip[3] != 0.0f ? clip[0] / clip[3] : 0.0f;
-        float ndcY = clip[3] != 0.0f ? clip[1] / clip[3] : 0.0f;
-        std::cout << "[SlangImGuiRenderer] Projection sample at display center -> clip(" << clip[0] << ", "
-                  << clip[1] << ", " << clip[2] << ", " << clip[3] << ") ndc(" << ndcX << ", " << ndcY
-                  << ")" << std::endl;
-        m_loggedProjectionSample = true;
     }
 
     const float fbWidth = drawData->DisplaySize.x * drawData->FramebufferScale.x;
@@ -342,16 +235,10 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
 
     auto* rootObject = renderEncoder->bindPipeline(m_pipelineState);
     if (!rootObject) {
-        std::cout << "[SlangImGuiRenderer] Failed to bind pipeline; skipping draw" << std::endl;
         return;
     }
 
-    if (!m_loggedBindingLayout) {
-        logShaderObjectLayout(rootObject);
-        m_loggedBindingLayout = true;
-    }
-
-    // Use official gfx::ShaderCursor (vendored from Slang tools/gfx-util/)
+    //Use official gfx::ShaderCursor (vendored from Slang tools/gfx-util/)
     gfx::ShaderCursor rootCursor(rootObject);
 
     // Match new shader structure: ConstantBuffer<ImGuiUniforms> uniforms
@@ -375,18 +262,6 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
         projectionResult = projectionCursor.setData(
             projectionData, sizeof(float) * m_projectionMatrix.size());
         projectionBound = SLANG_SUCCEEDED(projectionResult);
-        if (projectionBound && !m_loggedProjectionLayout) {
-            std::cout << "[SlangImGuiRenderer] Projection uniform matrix layout: "
-                      << (projectionUsesRowMajor ? "row-major" : "column-major")
-                      << " (enum=" << static_cast<int>(projectionMatrixLayout) << ")" << std::endl;
-            m_loggedProjectionLayout = true;
-        }
-        if (!projectionBound && !m_renderWarned) {
-            std::cout << "[SlangImGuiRenderer] setData for uniforms.projection failed: " << projectionResult
-                      << std::endl;
-        }
-    } else if (!m_renderWarned) {
-        std::cout << "[SlangImGuiRenderer] Unable to locate uniforms.projection binding" << std::endl;
     }
 
     if (projectionData && m_constantBuffer) {
@@ -397,9 +272,6 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
         if (SLANG_SUCCEEDED(mapResult) && mappedMatrix) {
             std::memcpy(mappedMatrix, projectionData, matrixBytes);
             m_constantBuffer->unmap(&matrixRange);
-        } else if (!m_renderWarned) {
-            std::cout << "[SlangImGuiRenderer] Failed to map projection constant buffer: " << mapResult
-                      << std::endl;
         }
     }
 
@@ -413,11 +285,6 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
     if (samplerCursorValid && m_fontSampler) {
         samplerResult = samplerCursor.setSampler(m_fontSampler);
         samplerBound = SLANG_SUCCEEDED(samplerResult);
-        if (!samplerBound && !m_renderWarned) {
-            std::cout << "[SlangImGuiRenderer] setSampler failed: " << samplerResult << std::endl;
-        }
-    } else if (!samplerCursorValid && !m_renderWarned) {
-        std::cout << "[SlangImGuiRenderer] Unable to locate uniforms.fontSampler binding" << std::endl;
     }
 
     const bool textureCursorValid = textureCursor.isValid();
@@ -469,17 +336,12 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
             if (textureView && textureView != currentTexture) {
                 if (textureCursorValid) {
                     SlangResult srvResult = textureCursor.setResource(textureView);
-                    if (SLANG_FAILED(srvResult) && !m_renderWarned) {
-                        std::cout << "[SlangImGuiRenderer] setResource failed: " << srvResult << std::endl;
-                    }
                     if (!attemptedTextureBinding) {
                         attemptedTextureBinding = true;
                         textureResult = srvResult;
                         textureBound = SLANG_SUCCEEDED(srvResult);
                     }
                     currentTexture = textureView;
-                } else if (!m_renderWarned) {
-                    std::cout << "[SlangImGuiRenderer] Unable to locate uniforms.fontTexture binding" << std::endl;
                 }
             }
 
@@ -495,17 +357,6 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
             clipMax.x = std::min(clipMax.x, fbWidth);
             clipMax.y = std::min(clipMax.y, fbHeight);
 
-            if (!m_loggedCommandDetails) {
-                std::cout << "[SlangImGuiRenderer] Cmd clipRect orig=" << command->ClipRect.x << ", "
-                          << command->ClipRect.y << " -> " << command->ClipRect.z << ", "
-                          << command->ClipRect.w << " | transformed min(" << clipMin.x << ", " << clipMin.y
-                          << ") max(" << clipMax.x << ", " << clipMax.y << ")"
-                          << " elemCount=" << command->ElemCount
-                          << " idxOffset=" << command->IdxOffset
-                          << " vtxOffset=" << command->VtxOffset
-                          << " texture=" << textureView << std::endl;
-            }
-
             if (clipMax.x <= clipMin.x || clipMax.y <= clipMin.y) {
                 continue;
             }
@@ -516,57 +367,16 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
             rect.maxX = static_cast<int32_t>(std::ceil(clipMax.x));
             rect.maxY = static_cast<int32_t>(std::ceil(clipMax.y));
 
-            if (!m_loggedCommandDetails) {
-                std::cout << "[SlangImGuiRenderer] Cmd scissor rect: (" << rect.minX << ", " << rect.minY
-                          << ") -> (" << rect.maxX << ", " << rect.maxY << ")" << std::endl;
-                m_loggedCommandDetails = true;
-            }
-
             renderEncoder->setScissorRects(1, &rect);
 
-            SlangResult drawResult = renderEncoder->drawIndexed(
+            renderEncoder->drawIndexed(
                 command->ElemCount,
                 command->IdxOffset + globalIndexOffset,
                 command->VtxOffset + globalVertexOffset);
-            if (SLANG_FAILED(drawResult) && !m_renderWarned) {
-                std::cout << "[SlangImGuiRenderer] drawIndexed failed: " << drawResult << std::endl;
-            }
         }
 
         globalVertexOffset += commandList->VtxBuffer.Size;
         globalIndexOffset += commandList->IdxBuffer.Size;
-    }
-
-    if (!m_loggedDrawStats) {
-        std::cout << "[SlangImGuiRenderer] Stage 5 draw encoding active: "
-                  << drawData->CmdListsCount << " lists, "
-                  << drawData->TotalVtxCount << " vertices, "
-                  << drawData->TotalIdxCount << " indices"
-                  << " | DisplaySize=" << drawData->DisplaySize.x << "x" << drawData->DisplaySize.y
-                  << " FramebufferScale=" << drawData->FramebufferScale.x << "x" << drawData->FramebufferScale.y
-                  << " ComputedViewport=" << fbWidth << "x" << fbHeight
-                  << std::endl;
-        m_loggedDrawStats = true;
-    }
-
-    if (!m_loggedBindingResults) {
-    std::cout << "[SlangImGuiRenderer] Binding summary: uniforms.projection="
-          << (projectionCursorValid ? (projectionBound ? "ok" : "set-failed") : "missing")
-          << " (result=" << projectionResult << ")"
-          << ", uniforms.fontSampler="
-                  << (samplerCursorValid ? (samplerBound ? "ok" : "set-failed") : "missing")
-                  << " (result=" << samplerResult << ")"
-                  << ", uniforms.fontTexture="
-                  << (textureCursorValid
-                          ? (textureBound ? "ok" : (attemptedTextureBinding ? "set-failed" : "not-attempted"))
-                          : "missing")
-          << " (result="
-          << (textureCursorValid
-              ? (attemptedTextureBinding ? textureResult : SLANG_E_INVALID_ARG)
-              : SLANG_E_INVALID_ARG)
-          << ")"
-                  << std::endl;
-        m_loggedBindingResults = true;
     }
 
     m_renderWarned = false;
@@ -574,13 +384,14 @@ void SlangImGuiRenderer::render(const ImDrawData* drawData, gfx::IRenderCommandE
 
 bool SlangImGuiRenderer::createShaderProgram() {
     if (!m_device) {
+        std::cerr << "[SlangImGuiRenderer] createShaderProgram: m_device is NULL!" << std::endl;
         return false;
     }
 
     Slang::ComPtr<slang::ISession> slangSession;
     SlangResult result = m_device->getSlangSession(slangSession.writeRef());
     if (SLANG_FAILED(result) || !slangSession) {
-        std::cout << "[SlangImGuiRenderer] Failed to acquire Slang session for shader compilation" << std::endl;
+        std::cerr << "[SlangImGuiRenderer] Failed to get Slang session (result=" << result << ")" << std::endl;
         return false;
     }
 
@@ -590,10 +401,15 @@ bool SlangImGuiRenderer::createShaderProgram() {
         "SlangImGuiRenderer.slang",
         kImGuiShaderSource,
         diagnostics.writeRef());
-    printDiagnostics("Shader diagnostics", diagnostics.get());
+
+    if (diagnostics && diagnostics->getBufferSize() > 0) {
+        std::cerr << "[SlangImGuiRenderer] Shader compilation diagnostics:\\n" 
+                  << std::string((const char*)diagnostics->getBufferPointer(), diagnostics->getBufferSize()) 
+                  << std::endl;
+    }
 
     if (!module) {
-        std::cout << "[SlangImGuiRenderer] Failed to load ImGui shader module" << std::endl;
+        std::cerr << "[SlangImGuiRenderer] Failed to load shader module" << std::endl;
         return false;
     }
 
@@ -601,7 +417,6 @@ bool SlangImGuiRenderer::createShaderProgram() {
     Slang::ComPtr<slang::IEntryPoint> fragmentEntryPoint;
     if (SLANG_FAILED(module->findEntryPointByName("vertexMain", vertexEntryPoint.writeRef())) ||
         SLANG_FAILED(module->findEntryPointByName("fragmentMain", fragmentEntryPoint.writeRef()))) {
-        std::cout << "[SlangImGuiRenderer] Failed to locate ImGui shader entry points" << std::endl;
         return false;
     }
 
@@ -618,20 +433,16 @@ bool SlangImGuiRenderer::createShaderProgram() {
         static_cast<SlangInt>(componentTypes.size()),
         composedProgram.writeRef(),
         diagnostics.writeRef());
-    printDiagnostics("Program composition diagnostics", diagnostics.get());
 
     if (SLANG_FAILED(result) || !composedProgram) {
-        std::cout << "[SlangImGuiRenderer] Failed to compose ImGui shader program" << std::endl;
         return false;
     }
 
     Slang::ComPtr<slang::IComponentType> linkedProgram;
     diagnostics = nullptr;
     result = composedProgram->link(linkedProgram.writeRef(), diagnostics.writeRef());
-    printDiagnostics("Program link diagnostics", diagnostics.get());
 
     if (SLANG_FAILED(result) || !linkedProgram) {
-        std::cout << "[SlangImGuiRenderer] Failed to link ImGui shader program" << std::endl;
         return false;
     }
 
@@ -643,10 +454,8 @@ bool SlangImGuiRenderer::createShaderProgram() {
         programDesc,
         m_shaderProgram.writeRef(),
         diagnostics.writeRef());
-    printDiagnostics("Shader program creation diagnostics", diagnostics.get());
 
     if (SLANG_FAILED(result) || !m_shaderProgram) {
-        std::cout << "[SlangImGuiRenderer] createProgram failed with result " << result << std::endl;
         return false;
     }
 
@@ -659,11 +468,6 @@ bool SlangImGuiRenderer::createInputLayout() {
     }
 
     if (!m_loggedLayoutInfo) {
-        std::cout << "[SlangImGuiRenderer] ImDrawVert size=" << sizeof(ImDrawVert)
-                  << " posOffset=" << offsetof(ImDrawVert, pos)
-                  << " uvOffset=" << offsetof(ImDrawVert, uv)
-                  << " colOffset=" << offsetof(ImDrawVert, col)
-                  << " ImDrawIdx size=" << sizeof(ImDrawIdx) << std::endl;
         m_loggedLayoutInfo = true;
     }
 
@@ -751,7 +555,6 @@ bool SlangImGuiRenderer::ensureVertexBufferCapacity(size_t requiredBytes) {
     buffer->setDebugName("SlangImGuiRenderer VertexBuffer");
     m_vertexBuffer = buffer;
     m_vertexBufferSize = newSize;
-    std::cout << "[SlangImGuiRenderer] Resized vertex buffer to " << m_vertexBufferSize << " bytes" << std::endl;
     return true;
 }
 
@@ -790,7 +593,6 @@ bool SlangImGuiRenderer::ensureIndexBufferCapacity(size_t requiredBytes) {
     buffer->setDebugName("SlangImGuiRenderer IndexBuffer");
     m_indexBuffer = buffer;
     m_indexBufferSize = newSize;
-    std::cout << "[SlangImGuiRenderer] Resized index buffer to " << m_indexBufferSize << " bytes" << std::endl;
     return true;
 }
 
@@ -836,12 +638,6 @@ bool SlangImGuiRenderer::uploadDrawData(const ImDrawData* drawData) {
         const size_t idxCount = static_cast<size_t>(cmdList->IdxBuffer.Size);
 
         if (!m_loggedSourceIndexSamples && idxCount > 0) {
-            const size_t sampleCount = std::min<size_t>(12, idxCount);
-            std::cout << "[SlangImGuiRenderer] Source index samples (count=" << sampleCount << "):";
-            for (size_t i = 0; i < sampleCount; ++i) {
-                std::cout << ' ' << cmdList->IdxBuffer.Data[i];
-            }
-            std::cout << std::endl;
             m_loggedSourceIndexSamples = true;
         }
 
@@ -865,29 +661,11 @@ bool SlangImGuiRenderer::uploadDrawData(const ImDrawData* drawData) {
         indexDst += idxCount;
     }
 
-    if (vertexCountAccum > 0 && !m_loggedVertexBounds) {
-    std::cout << "[SlangImGuiRenderer] Vertex bounds: min(" << minPos.x << ", " << minPos.y
-                  << ") max(" << maxPos.x << ", " << maxPos.y << ")"
-                  << " firstColor=0x" << std::hex << sampleColor << std::dec << std::endl;
+    if (!m_loggedVertexBounds) {
         m_loggedVertexBounds = true;
     }
 
-    if (drawData->TotalVtxCount > 0 && !m_loggedVertexSamples) {
-        const size_t sampleCount = std::min<size_t>(4, static_cast<size_t>(drawData->TotalVtxCount));
-        std::cout << "[SlangImGuiRenderer] Vertex samples (count=" << sampleCount << "):" << std::endl;
-        for (size_t i = 0; i < sampleCount; ++i) {
-            const ImDrawVert& v = vertexStart[i];
-            std::cout << "    V" << i << " pos(" << v.pos.x << ", " << v.pos.y << ") uv(" << v.uv.x << ", "
-                      << v.uv.y << ") col=0x" << std::hex << std::setw(8) << std::setfill('0') << v.col
-                      << std::dec << std::setfill(' ') << std::endl;
-        }
-
-        const size_t sampleIdxCount = std::min<size_t>(12, static_cast<size_t>(drawData->TotalIdxCount));
-        std::cout << "[SlangImGuiRenderer] Index samples (count=" << sampleIdxCount << "):";
-        for (size_t i = 0; i < sampleIdxCount; ++i) {
-            std::cout << ' ' << indexStart[i];
-        }
-        std::cout << std::endl;
+    if (!m_loggedVertexSamples) {
         m_loggedVertexSamples = true;
     }
 
@@ -954,42 +732,6 @@ bool SlangImGuiRenderer::updateProjectionConstants(const ImDrawData* drawData) {
     };
 
     if (!m_loggedProjectionMatrix) {
-        std::cout << std::fixed << std::setprecision(6);
-        std::cout << "[SlangImGuiRenderer] Projection matrix rows:" << std::endl;
-        for (int row = 0; row < 4; ++row) {
-            std::cout << "    [";
-            for (int col = 0; col < 4; ++col) {
-                int idx = row * 4 + col;
-                std::cout << std::setw(12) << m_projectionMatrix[idx];
-                if (col < 3) {
-                    std::cout << ", ";
-                }
-            }
-            std::cout << "]" << std::endl;
-        }
-
-        auto logPoint = [&](const char* label, float x, float y) {
-            float vec[4] = {x, y, 0.0f, 1.0f};
-            float clip[4] = {};
-            for (int col = 0; col < 4; ++col) {
-                clip[col] =
-                    vec[0] * m_projectionMatrix[0 * 4 + col] +
-                    vec[1] * m_projectionMatrix[1 * 4 + col] +
-                    vec[2] * m_projectionMatrix[2 * 4 + col] +
-                    vec[3] * m_projectionMatrix[3 * 4 + col];
-            }
-            float ndcX = clip[3] != 0.0f ? clip[0] / clip[3] : 0.0f;
-            float ndcY = clip[3] != 0.0f ? clip[1] / clip[3] : 0.0f;
-            std::cout << "[SlangImGuiRenderer] " << label << " -> clip(" << clip[0] << ", " << clip[1] << ", "
-                      << clip[2] << ", " << clip[3] << ") ndc(" << ndcX << ", " << ndcY << ")" << std::endl;
-        };
-
-        logPoint("Proj corner TL", L, T);
-        logPoint("Proj corner BR", R, B);
-        logPoint("Proj display center", L + (R - L) * 0.5f, T + (B - T) * 0.5f);
-
-        std::cout.unsetf(std::ios::floatfield);
-        std::cout.precision(6);
         m_loggedProjectionMatrix = true;
     }
 
@@ -1012,7 +754,6 @@ bool SlangImGuiRenderer::createFontResources() {
     }
 
     if (!ImGui::GetCurrentContext()) {
-        std::cout << "[SlangImGuiRenderer] createFontResources() requires an active ImGui context" << std::endl;
         return false;
     }
 
@@ -1023,7 +764,6 @@ bool SlangImGuiRenderer::createFontResources() {
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
 
     if (!pixels || width <= 0 || height <= 0) {
-        std::cout << "[SlangImGuiRenderer] ImGui font atlas data missing or empty" << std::endl;
         return false;
     }
 
@@ -1049,7 +789,6 @@ bool SlangImGuiRenderer::createFontResources() {
     Slang::ComPtr<gfx::ITextureResource> fontTexture =
         m_device->createTextureResource(textureDesc, &initData);
     if (!fontTexture) {
-        std::cout << "[SlangImGuiRenderer] Failed to create font texture resource" << std::endl;
         return false;
     }
     fontTexture->setDebugName("SlangImGuiRenderer FontTexture");
@@ -1061,7 +800,6 @@ bool SlangImGuiRenderer::createFontResources() {
     Slang::ComPtr<gfx::IResourceView> fontTextureView =
         m_device->createTextureView(fontTexture, viewDesc);
     if (!fontTextureView) {
-        std::cout << "[SlangImGuiRenderer] Failed to create font texture view" << std::endl;
         return false;
     }
 
@@ -1069,7 +807,6 @@ bool SlangImGuiRenderer::createFontResources() {
     Slang::ComPtr<gfx::ISamplerState> fontSampler =
         m_device->createSamplerState(samplerDesc);
     if (!fontSampler) {
-        std::cout << "[SlangImGuiRenderer] Failed to create font sampler" << std::endl;
         return false;
     }
 
@@ -1079,9 +816,6 @@ bool SlangImGuiRenderer::createFontResources() {
     m_fontTexture = fontTexture;
     m_fontTextureView = fontTextureView;
     m_fontSampler = fontSampler;
-
-    std::cout << "[SlangImGuiRenderer] Uploaded font atlas of size "
-              << width << "x" << height << std::endl;
 
     return true;
 }

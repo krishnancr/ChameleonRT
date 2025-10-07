@@ -29,10 +29,8 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     gfx::IDevice::Desc deviceDesc = {};
 #ifdef USE_VULKAN
     deviceDesc.deviceType = DeviceType::Vulkan;
-    std::cout << "🎯 Creating Vulkan device (Slang will auto-configure for SPIR-V)" << std::endl;
 #else
     deviceDesc.deviceType = DeviceType::DirectX12;
-    std::cout << "🎯 Creating D3D12 device (Slang will auto-configure for DXIL)" << std::endl;
 #endif
     gfx::Result res = gfxCreateDevice(&deviceDesc, device.writeRef());
     if (SLANG_FAILED(res)) throw std::runtime_error("Failed to create GFX device");
@@ -40,7 +38,7 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     // Verify device type and adapter (keep minimal logging for diagnostics)
     const gfx::DeviceInfo& deviceInfo = device->getDeviceInfo();
     const char* deviceTypeName = gfxGetDeviceTypeName(deviceInfo.deviceType);
-    std::cout << "Graphics API: " << deviceTypeName;
+    // Graphics API determined: deviceTypeName
     
     // 3. Create command queue
     gfx::ICommandQueue::Desc queueDesc = {};
@@ -85,8 +83,7 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
     framebufferLayoutDesc.depthStencil = &depthTargetLayout;
     device->createFramebufferLayout(framebufferLayoutDesc, framebufferLayout.writeRef());
     if (actualImageCount != 2) {
-        std::cerr << "❌ CRITICAL: Triangle example expects exactly 2 images!" << std::endl;
-        return;
+        throw std::runtime_error("Expected exactly 2 swapchain images");
     }
 
     // 5.1. Create render pass layout (following triangle example pattern exactly)
@@ -135,14 +132,13 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         io.Fonts->Build();
     }
 
-    // ===== VALIDATION STEP 1: Check vector sizes vs swapchain count =====
+    // Validate swapchain setup
     uint32_t swapchainImageCount = swapchain->getDesc().imageCount;
-
     if (framebuffers.size() != swapchainImageCount) {
-        std::cerr << "❌ VALIDATION FAILED: Framebuffers size mismatch!" << std::endl;
+        throw std::runtime_error("Framebuffers size mismatch");
     }
     if (transientHeaps.size() != swapchainImageCount) {
-        std::cerr << "❌ VALIDATION FAILED: TransientHeaps size mismatch!" << std::endl;
+        throw std::runtime_error("TransientHeaps size mismatch");
     }
 
     // Initialize shader validation first (to create shader program)
@@ -161,7 +157,7 @@ SlangDisplay::SlangDisplay(SDL_Window* sdl_window) : window(sdl_window) {
         m_imguiRenderer = std::make_unique<SlangImGuiRenderer>();
         m_imguiRendererInitialized = m_imguiRenderer->initialize(desc);
         if (!m_imguiRendererInitialized) {
-            std::cout << "[SlangDisplay] Slang ImGui renderer stub active; falling back to no-op" << std::endl;
+            std::cerr << "[SlangDisplay] WARNING: ImGui renderer initialization failed" << std::endl;
         }
     }
 #endif
@@ -245,11 +241,10 @@ void SlangDisplay::resize(const int width, const int height) {
     framebuffers.clear();
     renderTargetViews.clear();
     
-    if (swapchain->resize(width, height) == SLANG_OK) {
-        recreateSwapchainFramebuffers();
-    } else {
-        std::cerr << "❌ CRITICAL: Swapchain resize failed!" << std::endl;
+    if (swapchain->resize(width, height) != SLANG_OK) {
+        throw std::runtime_error("Swapchain resize failed");
     }
+    recreateSwapchainFramebuffers();
 }
 
 // New method following triangle example createSwapchainFramebuffers() pattern
@@ -275,8 +270,6 @@ void SlangDisplay::display(RenderBackend* backend) {
     try {
     // CRITICAL: Validate swapchain state before use (triangle example pattern)
     if (!swapchain || framebuffers.empty()) {
-        std::cerr << "❌ CRITICAL: Invalid swapchain state - swapchain=" << (swapchain ? "valid" : "null") 
-                  << " framebuffers=" << framebuffers.size() << std::endl;
         return;
     }
     
@@ -285,8 +278,6 @@ void SlangDisplay::display(RenderBackend* backend) {
     
     // Additional validation: Check frame index is valid
     if (m_currentFrameIndex < 0 || m_currentFrameIndex >= static_cast<int>(framebuffers.size())) {
-        std::cerr << "❌ CRITICAL: Invalid frame index " << m_currentFrameIndex 
-                  << " (framebuffers=" << framebuffers.size() << ")" << std::endl;
         return;
     }
     
@@ -300,12 +291,7 @@ void SlangDisplay::display(RenderBackend* backend) {
     // Use proper frame-based buffer index
     size_t bufferIndex = m_currentFrameIndex % transientHeaps.size();
 
-    if (bufferIndex >= transientHeaps.size()) {
-        std::cerr << "❌ CRITICAL: bufferIndex " << bufferIndex << " >= transientHeaps.size() " << transientHeaps.size() << std::endl;
-        return;
-    }
-    if (!transientHeaps[bufferIndex]) {
-        std::cerr << "❌ CRITICAL: transientHeaps[" << bufferIndex << "] is nullptr!" << std::endl;
+    if (bufferIndex >= transientHeaps.size() || !transientHeaps[bufferIndex]) {
         return;
     }
 
@@ -319,12 +305,10 @@ void SlangDisplay::display(RenderBackend* backend) {
     Slang::ComPtr<gfx::ICommandBuffer> commandBuffer = transientHeaps[bufferIndex]->createCommandBuffer();
 
     if (!commandBuffer) {
-        std::cerr << "❌ CRITICAL: Command buffer is null!" << std::endl;
         return;
     }
     
     if (!renderPassLayout) {
-        std::cerr << "❌ CRITICAL: RenderPassLayout is null!" << std::endl;
         return;
     }
     
