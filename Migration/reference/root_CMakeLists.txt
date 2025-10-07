@@ -1,0 +1,66 @@
+# Reference: Root CMakeLists.txt Changes
+#
+# Shows what needs to be added to the root CMakeLists.txt
+
+# ============================================================================
+# Add Slang Option (near other options)
+# ============================================================================
+
+option(ENABLE_SLANG "Use Slang for shader compilation" OFF)
+
+# ============================================================================
+# Set Slang Root (if needed)
+# ============================================================================
+
+# Optionally allow user to specify SLANG_ROOT from environment or script
+if(DEFINED ENV{SLANG_PATH})
+    set(Slang_ROOT $ENV{SLANG_PATH})
+endif()
+
+# Or users can set via:
+# cmake -DSlang_ROOT=C:\dev\slang\build\Debug ...
+
+# ============================================================================
+# Find Slang and Create Utility Library
+# ============================================================================
+
+if(ENABLE_SLANG)
+    find_package(Slang REQUIRED)
+    
+    # Create Slang compiler utility library
+    add_library(slang_compiler_util STATIC
+        util/slang_shader_compiler.h
+        util/slang_shader_compiler.cpp
+    )
+    
+    target_link_libraries(slang_compiler_util
+        PUBLIC Slang::Slang
+    )
+    
+    target_include_directories(slang_compiler_util
+        PUBLIC 
+            ${CMAKE_CURRENT_SOURCE_DIR}/util
+            ${Slang_INCLUDE_DIRS}
+    )
+    
+    target_compile_definitions(slang_compiler_util
+        PUBLIC CHAMELEONRT_USE_SLANG=1
+    )
+    
+    # Make available to all targets
+    set(SLANG_COMPILER_UTIL slang_compiler_util)
+endif()
+
+# ============================================================================
+# DLL Deployment (Windows)
+# ============================================================================
+
+if(WIN32 AND ENABLE_SLANG)
+    # Copy Slang DLL to executable directory
+    add_custom_command(TARGET chameleonrt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${Slang_ROOT}/bin/slang.dll"
+            "$<TARGET_FILE_DIR:chameleonrt>"
+        COMMENT "Copying slang.dll to executable directory"
+    )
+endif()

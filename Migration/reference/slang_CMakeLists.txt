@@ -1,0 +1,184 @@
+# Reference: Working Slang Backend CMakeLists.txt
+#
+# This file shows how the slang-gfx backend successfully found and linked Slang.
+# Use as reference when integrating into DXR/Vulkan backends.
+
+# ============================================================================
+# Finding Slang Package
+# ============================================================================
+
+# FindSlang.cmake is in the root cmake/ directory
+find_package(Slang REQUIRED)
+
+# This creates the following targets:
+# - Slang::Slang - Main Slang compiler library
+# - Slang::GFX - Slang GFX abstraction (not needed for our new approach)
+
+# ============================================================================
+# Conditional D3D12/DXC Detection (Windows only)
+# ============================================================================
+
+if(WIN32 AND NOT (DEFINED USE_VULKAN AND USE_VULKAN))
+    # Use the existing FindD3D12 module from DXR backend for DXC detection
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../dxr/cmake")
+    
+    find_package(D3D12)
+    
+    if(D3D12_FOUND AND D3D12_SHADER_COMPILER)
+        message(STATUS "Found DXC compiler: ${D3D12_SHADER_COMPILER}")
+        
+        # Get the directory containing DXC
+        get_filename_component(DXC_BIN_DIR ${D3D12_SHADER_COMPILER} DIRECTORY)
+        
+        # Look for dxcompiler.dll in the same directory as dxc.exe
+        find_file(DXC_RUNTIME_DLL 
+            NAMES dxcompiler.dll
+            PATHS ${DXC_BIN_DIR}
+            NO_DEFAULT_PATH)
+            
+        if(DXC_RUNTIME_DLL)
+            message(STATUS "Found DXC runtime: ${DXC_RUNTIME_DLL}")
+            set(DXC_DEPLOY_NEEDED TRUE)
+        else()
+            message(WARNING "DXC compiler found but dxcompiler.dll missing")
+        endif()
+    endif()
+endif()
+
+# ============================================================================
+# Target Creation
+# ============================================================================
+
+set(CRT_SLANG_SOURCES
+    # Your backend sources here
+    render_backend.cpp
+    render_backend.h
+)
+
+add_library(crt_backend MODULE ${CRT_SLANG_SOURCES})
+
+set_target_properties(crt_backend PROPERTIES 
+    OUTPUT_NAME "crt_backend"
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+# ============================================================================
+# Include Directories
+# ============================================================================
+
+target_include_directories(crt_backend
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${PROJECT_SOURCE_DIR}
+        ${Slang_INCLUDE_DIRS}  # From FindSlang
+)
+
+# If Slang_ROOT is defined, can access tools directory
+if(DEFINED Slang_ROOT)
+    target_include_directories(crt_backend PRIVATE ${Slang_ROOT}/tools)
+endif()
+
+# ============================================================================
+# Linking
+# ============================================================================
+
+target_link_libraries(crt_backend 
+    PRIVATE 
+        util           # ChameleonRT utility library
+        display        # Display abstraction
+        Slang::Slang   # Slang compiler
+)
+
+# NOTE: We're NOT linking Slang::GFX for direct API approach
+# Old slang-gfx backend did:
+# target_link_libraries(crt_slang PRIVATE Slang::GFX)
+
+# ============================================================================
+# Platform-Specific Dependencies
+# ============================================================================
+
+if(DEFINED USE_VULKAN AND USE_VULKAN)
+    # Vulkan backend
+    find_package(Vulkan REQUIRED)
+    target_link_libraries(crt_backend PRIVATE ${Vulkan_LIBRARIES})
+    target_include_directories(crt_backend PRIVATE ${Vulkan_INCLUDE_DIRS})
+    target_compile_definitions(crt_backend PRIVATE USE_VULKAN)
+    
+    if(UNIX AND NOT APPLE)
+        # Linux: may need dl library for dynamic loading
+        target_link_libraries(crt_backend PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+else()
+    # D3D12 backend (Windows)
+    if(WIN32)
+        target_link_libraries(crt_backend PRIVATE d3d12.lib dxgi.lib)
+    endif()
+endif()
+
+# ============================================================================
+# DLL Deployment (Windows)
+# ============================================================================
+
+# Copy Slang DLLs to output directory so they're found at runtime
+if(WIN32)
+    set(SLANG_DEPENDENCIES
+        "${Slang_ROOT}/bin/slang.dll"
+        # NOTE: gfx.dll only needed if using slang-gfx, not for our approach
+    )
+    set(FINAL_OUTPUT_DIR "${PROJECT_BINARY_DIR}/$<CONFIG>")
+    
+    foreach(DEP ${SLANG_DEPENDENCIES})
+        add_custom_command(TARGET crt_backend POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${DEP}
+                ${FINAL_OUTPUT_DIR}
+            COMMENT "Copying ${DEP} to build output directory"
+        )
+    endforeach()
+    
+    # Deploy DXC runtime if available
+    if(DXC_DEPLOY_NEEDED)
+        add_custom_command(TARGET crt_backend POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${DXC_RUNTIME_DLL}"
+                "${FINAL_OUTPUT_DIR}"
+            COMMENT "Deploying DXC runtime for D3D12 shader compilation"
+        )
+    endif()
+elseif(APPLE)
+    # macOS
+    set(SLANG_DEPENDENCIES
+        "${Slang_ROOT}/lib/libslang.dylib"
+    )
+    # Copy to output directory
+    # Similar copy commands as Windows
+else()
+    # Linux
+    set(SLANG_DEPENDENCIES
+        "${Slang_ROOT}/lib/libslang.so"
+    )
+    # Copy to output directory or rely on LD_LIBRARY_PATH
+endif()
+
+# ============================================================================
+# Key Differences for Direct API Approach
+# ============================================================================
+
+# What we're KEEPING from slang-gfx backend:
+# 1. FindSlang.cmake module
+# 2. Slang::Slang target linking
+# 3. DLL deployment automation
+# 4. Conditional platform detection
+
+# What we're REMOVING:
+# 1. Slang::GFX linking (no slang-gfx abstraction)
+# 2. GFX device creation code
+# 3. SlangImGuiRenderer (used slang-gfx features)
+# 4. vendor/gfx-util/shader-cursor (slang-gfx specific)
+
+# What we're ADDING:
+# 1. SlangShaderCompiler utility class
+# 2. Direct D3D12/Vulkan pipeline creation
+# 3. Manual resource binding and synchronization
