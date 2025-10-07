@@ -1,0 +1,42 @@
+{
+    "files.associations": {
+        "array": "cpp",
+        "chrono": "cpp",
+        "filesystem": "cpp",
+        "format": "cpp",
+        "forward_list": "cpp",
+        "initializer_list": "cpp",
+        "list": "cpp",
+        "regex": "cpp",
+        "valarray": "cpp",
+        "vector": "cpp",
+        "xhash": "cpp",
+        "xstring": "cpp",
+        "xtree": "cpp",
+        "xutility": "cpp",
+        "*.slang": "hlsl"
+    },
+    "files.exclude": {
+        "**/.git": true,
+        "**/build": true,
+        "**/build_*": true,
+        "**/*.vcxproj": true,
+        "**/*.vcxproj.filters": true
+    },
+    "search.exclude": {
+        "**/build": true,
+        "**/build_*": true,
+        "**/build_vulkan": true,
+        "**/build_d3d12": true,
+        "**/.vscode": true,
+        "**/CMakeFiles": true
+    },
+    "github.copilot.enable": {
+        "*": true,
+        "cpp": true,
+        "cmake": true,
+        "markdown": true,
+        "plaintext": true
+    },
+    "cmake.configureOnOpen": false
+}
