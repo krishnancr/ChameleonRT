@@ -23,6 +23,55 @@ include(cmake/package.cmake)
 
 include(CMakeDependentOption)
 
+# ============================================================================
+# Slang Shader Compiler Support
+# ============================================================================
+
+option(ENABLE_SLANG "Use Slang for shader compilation" OFF)
+
+if(ENABLE_SLANG)
+    # Allow user to specify Slang_ROOT from environment variable
+    if(DEFINED ENV{SLANG_PATH})
+        set(Slang_ROOT $ENV{SLANG_PATH})
+    endif()
+    
+    # Find the Slang package (uses cmake/FindSlang.cmake)
+    find_package(Slang REQUIRED)
+    
+    # Create Slang compiler utility library
+    add_library(slang_compiler_util STATIC
+        util/slang_shader_compiler.h
+        util/slang_shader_compiler.cpp
+    )
+    
+    # Link to Slang library
+    target_link_libraries(slang_compiler_util
+        PUBLIC Slang::Slang
+    )
+    
+    # Set include directories
+    target_include_directories(slang_compiler_util
+        PUBLIC 
+            ${CMAKE_CURRENT_SOURCE_DIR}/util
+            ${Slang_INCLUDE_DIRS}
+    )
+    
+    # Define macro to indicate Slang is available
+    target_compile_definitions(slang_compiler_util
+        PUBLIC CHAMELEONRT_USE_SLANG=1
+    )
+    
+    # Set C++ standard for the utility library (requires C++17 for std::optional)
+    set_target_properties(slang_compiler_util PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+    )
+    
+    message(STATUS "Slang shader compiler support enabled")
+    message(STATUS "Slang include directory: ${Slang_INCLUDE_DIRS}")
+    message(STATUS "Slang library: ${Slang_LIBRARIES}")
+endif()
+
 add_subdirectory(imgui)
 add_subdirectory(util)
 add_subdirectory(backends)
@@ -38,6 +87,20 @@ set_target_properties(chameleonrt PROPERTIES
 target_link_libraries(chameleonrt PUBLIC
     util
     display)
+
+# ============================================================================
+# Slang DLL Deployment (Windows)
+# ============================================================================
+
+if(WIN32 AND ENABLE_SLANG)
+    # Copy slang.dll to the executable directory so it can be found at runtime
+    add_custom_command(TARGET chameleonrt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${Slang_ROOT}/bin/slang.dll"
+            "$<TARGET_FILE_DIR:chameleonrt>"
+        COMMENT "Deploying slang.dll to executable directory"
+    )
+endif()
 
 install(TARGETS chameleonrt
         RUNTIME DESTINATION bin)

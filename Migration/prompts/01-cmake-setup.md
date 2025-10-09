@@ -54,7 +54,7 @@ Requirements:
 
 Pattern reference: Migration/reference/root_CMakeLists.txt
 
-Please show:
+Please make these changes:
 - Exact location to add code (use replace_string_in_file with context)
 - Complete if(ENABLE_SLANG) block
 - DLL deployment command for Windows
@@ -133,10 +133,10 @@ Requirements:
 
 Pattern reference: Migration/reference/backends_CMakeLists.txt
 
-Please show:
-- Where to add include()
-- Where to add dependent options
-- How to update subdirectory conditions
+Please make these changes:
+- add include()
+- add dependent options
+- update subdirectory conditions
 - Use replace_string_in_file with sufficient context
 ```
 

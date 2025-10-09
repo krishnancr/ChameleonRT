@@ -8,6 +8,12 @@
 #include <sstream>
 #include <string>
 #include "render_dxr_embedded_dxil.h"
+#ifdef USE_SLANG_COMPILER
+#include "slang_shader_compiler.h"
+#include <fstream>
+#include <filesystem>
+#include <Windows.h>  // For GetModuleHandleExA, GetModuleFileNameA
+#endif
 #include "util.h"
 #include <glm/ext.hpp>
 
@@ -586,13 +592,103 @@ void RenderDXR::create_device_objects()
     // Buffer to readback query results in to
     query_resolve_buffer = dxr::Buffer::readback(
         device.Get(), sizeof(uint64_t) * 2, D3D12_RESOURCE_STATE_COPY_DEST);
+
+#ifdef USE_SLANG_COMPILER
+    // Initialize Slang shader compiler
+    if (!slangCompiler.isValid()) {
+        throw std::runtime_error("Failed to initialize Slang shader compiler");
+    }
+#endif
 }
+
+#ifdef USE_SLANG_COMPILER
+namespace {
+    // Get the directory where crt_dxr.dll is located
+    std::filesystem::path get_dll_directory() {
+        char dll_path[MAX_PATH];
+        HMODULE hModule = NULL;
+        
+        // Get handle to this DLL (crt_dxr.dll)
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCSTR)&get_dll_directory,  // Any function address in this DLL
+            &hModule
+        );
+        
+        if (hModule == NULL) {
+            throw std::runtime_error("Failed to get DLL module handle");
+        }
+        
+        // Get full path to DLL
+        if (GetModuleFileNameA(hModule, dll_path, MAX_PATH) == 0) {
+            throw std::runtime_error("Failed to get DLL path");
+        }
+        
+        // Return parent directory
+        std::filesystem::path dll_file_path(dll_path);
+        return dll_file_path.parent_path();
+    }
+    
+    // Load shader source from file
+    std::string load_shader_source(const std::filesystem::path& shader_path) {
+        std::ifstream file(shader_path);
+        if (!file.is_open()) {
+            throw std::runtime_error("Failed to open shader file: " + shader_path.string());
+        }
+        
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        return buffer.str();
+    }
+}
+#endif // USE_SLANG_COMPILER
 
 void RenderDXR::build_raytracing_pipeline()
 {
-    dxr::ShaderLibrary shader_library(render_dxr_dxil,
-                                      sizeof(render_dxr_dxil),
-                                      {L"RayGen", L"Miss", L"ClosestHit", L"ShadowMiss"});
+#ifdef USE_SLANG_COMPILER
+    // Get shader path relative to DLL location
+    std::filesystem::path dll_dir = get_dll_directory();
+    std::filesystem::path shader_path = dll_dir / "simple_lambertian.hlsl";
+    
+    // Load shader source from file
+    std::string hlsl_source;
+    try {
+        hlsl_source = load_shader_source(shader_path);
+    } catch (const std::exception& e) {
+        std::cerr << "[Slang] ERROR loading shader: " << e.what() << std::endl;
+        throw;
+    }
+    
+    // Compile HLSL to DXIL using Slang (per-entry-point compilation)
+    auto result = slangCompiler.compileHLSLToDXILLibrary(hlsl_source);
+    
+    if (!result) {
+        std::string error = slangCompiler.getLastError();
+        std::cerr << "[Slang] Compilation failed: " << error << std::endl;
+        throw std::runtime_error("Slang shader compilation failed");
+    }
+    
+    // Create separate D3D12 shader libraries for each entry point
+    // D3D12 RT pipeline supports multiple DXIL libraries
+    std::vector<dxr::ShaderLibrary> shader_libraries;
+    
+    for (const auto& blob : *result) {
+        std::wstring export_name(blob.entryPoint.begin(), blob.entryPoint.end());
+        shader_libraries.emplace_back(
+            blob.bytecode.data(),
+            blob.bytecode.size(),
+            std::vector<std::wstring>{export_name}
+        );
+    }
+#else
+    // Original embedded DXIL path
+    std::vector<dxr::ShaderLibrary> shader_libraries;
+    shader_libraries.emplace_back(
+        render_dxr_dxil,
+        sizeof(render_dxr_dxil),
+        std::vector<std::wstring>{L"RayGen", L"Miss", L"ClosestHit", L"ShadowMiss"}
+    );
+#endif
 
     dxr::RootSignature global_root_sig =
         dxr::RootSignatureBuilder::global().create(device.Get());
@@ -614,16 +710,32 @@ void RenderDXR::build_raytracing_pipeline()
                                                .add_constants("MeshData", 0, 3, 1)
                                                .create(device.Get());
 
+    // Build RT pipeline - add all shader libraries
     dxr::RTPipelineBuilder rt_pipeline_builder =
         dxr::RTPipelineBuilder()
-            .set_global_root_sig(global_root_sig)
-            .add_shader_library(shader_library)
+            .set_global_root_sig(global_root_sig);
+    
+    // Add all shader libraries to the pipeline
+    // D3D12 RT pipeline supports multiple DXIL libraries (see dxr_utils.cpp:495)
+    for (auto& lib : shader_libraries) {
+        rt_pipeline_builder.add_shader_library(lib);
+    }
+    
+    // Collect all export names for shader payload configuration
+    std::vector<std::wstring> all_exports;
+    for (const auto& lib : shader_libraries) {
+        for (const auto& name : lib.export_names()) {
+            all_exports.push_back(name);
+        }
+    }
+    
+    rt_pipeline_builder
             .set_ray_gen(L"RayGen")
             .add_miss_shader(L"Miss")
             .add_miss_shader(L"ShadowMiss")
             .set_shader_root_sig({L"RayGen"}, raygen_root_sig)
             .configure_shader_payload(
-                shader_library.export_names(), 8 * sizeof(float), 2 * sizeof(float))
+                all_exports, 8 * sizeof(float), 2 * sizeof(float))
             .set_max_recursion(1);
 
     // Setup hit groups and shader root signatures for our instances.

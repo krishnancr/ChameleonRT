@@ -1,7 +1,8 @@
 cmake_dependent_option(ENABLE_DXR "Build the DXR rendering backend" OFF
     "WIN32" OFF)
 
-if (NOT ENABLE_DXR)
+# Build if either regular DXR or DXR with Slang is enabled
+if (NOT ENABLE_DXR AND NOT ENABLE_DXR_SLANG)
     return()
 endif()
 
@@ -40,7 +41,7 @@ add_library(crt_dxr MODULE
     imgui_impl_dx12.cpp)
 
 set_target_properties(crt_dxr PROPERTIES
-	CXX_STANDARD 14
+	CXX_STANDARD 17
 	CXX_STANDARD_REQUIRED ON)
 
 if (REPORT_RAY_STATS)
@@ -56,6 +57,62 @@ target_link_libraries(crt_dxr PUBLIC
     util
     display
     ${D3D12_LIBRARIES})
+
+# Add Slang support if enabled
+if(ENABLE_DXR_SLANG)
+    target_link_libraries(crt_dxr PRIVATE slang_compiler_util)
+    target_compile_definitions(crt_dxr PRIVATE USE_SLANG_COMPILER=1)
+    
+    # Slang requires DXC for HLSL->DXIL compilation
+    # Deploy dxcompiler.dll and dxil.dll to output directory
+    if(WIN32)
+        # Find Windows SDK bin directory with DXC
+        # Try common SDK versions
+        set(POSSIBLE_SDK_VERSIONS 
+            "10.0.26100.0"
+            "10.0.22621.0" 
+            "10.0.22000.0"
+            "10.0.20348.0"
+            "10.0.19041.0"
+        )
+        
+        set(DXC_FOUND FALSE)
+        foreach(SDK_VERSION ${POSSIBLE_SDK_VERSIONS})
+            set(WINSDK_BIN_DIR "C:/Program Files (x86)/Windows Kits/10/bin/${SDK_VERSION}/x64")
+            if(EXISTS "${WINSDK_BIN_DIR}/dxcompiler.dll")
+                set(DXC_FOUND TRUE)
+                message(STATUS "Found DXC in Windows SDK ${SDK_VERSION}")
+                break()
+            endif()
+        endforeach()
+        
+        if(DXC_FOUND)
+            # Copy DXC DLLs to output directory after build
+            add_custom_command(TARGET crt_dxr POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${WINSDK_BIN_DIR}/dxcompiler.dll"
+                    "$<TARGET_FILE_DIR:crt_dxr>"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${WINSDK_BIN_DIR}/dxil.dll"
+                    "$<TARGET_FILE_DIR:crt_dxr>"
+                COMMENT "Deploying DXC DLLs for Slang HLSL compilation"
+            )
+            message(STATUS "DXC DLLs will be deployed to output directory")
+        else()
+            message(WARNING "DXC compiler not found in Windows SDK. Slang HLSL compilation may fail at runtime.")
+            message(WARNING "Please install Windows 10 SDK or manually copy dxcompiler.dll and dxil.dll to output directory")
+        endif()
+        
+        # Copy shader source files to output directory for runtime compilation
+        add_custom_command(TARGET crt_dxr POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/simple_lambertian.hlsl"
+                "$<TARGET_FILE_DIR:crt_dxr>/simple_lambertian.hlsl"
+            COMMENT "Deploying simple_lambertian.hlsl for runtime Slang compilation"
+        )
+        message(STATUS "Shader files will be deployed to output directory")
+    endif()
+endif()
 
 if (ENABLE_PIX_RUNTIME)
     target_compile_options(crt_dxr PUBLIC

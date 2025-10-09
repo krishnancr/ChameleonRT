@@ -674,7 +674,40 @@ RTPipeline::RTPipeline(D3D12_STATE_OBJECT_DESC &desc,
       hit_groups(hit_groups),
       signature_associations(signature_associations)
 {
-    CHECK_ERR(device->CreateStateObject(&desc, IID_PPV_ARGS(&state)));
+    // Try to create the state object with enhanced error reporting
+    HRESULT hr = device->CreateStateObject(&desc, IID_PPV_ARGS(&state));
+    if (FAILED(hr)) {
+        std::cerr << "CreateStateObject failed with HRESULT: 0x" << std::hex << hr << std::dec << std::endl;
+        
+        // Try to get debug info queue messages
+        Microsoft::WRL::ComPtr<ID3D12InfoQueue> info_queue;
+        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&info_queue)))) {
+            UINT64 message_count = info_queue->GetNumStoredMessages();
+            std::cerr << "D3D12 Debug Messages (" << message_count << " messages):" << std::endl;
+            
+            for (UINT64 i = 0; i < message_count; ++i) {
+                SIZE_T message_length = 0;
+                info_queue->GetMessage(i, nullptr, &message_length);
+                
+                if (message_length > 0) {
+                    std::vector<uint8_t> message_data(message_length);
+                    D3D12_MESSAGE *message = reinterpret_cast<D3D12_MESSAGE*>(message_data.data());
+                    
+                    if (SUCCEEDED(info_queue->GetMessage(i, message, &message_length))) {
+                        std::cerr << "  [" << i << "] " << message->pDescription << std::endl;
+                    }
+                }
+            }
+            
+            // Clear the messages after printing
+            info_queue->ClearStoredMessages();
+        } else {
+            std::cerr << "Debug layer not available - rebuild with _DEBUG defined for detailed error messages" << std::endl;
+        }
+        
+        throw std::runtime_error("CreateStateObject failed");
+    }
+    
     CHECK_ERR(state->QueryInterface(&pipeline_props));
 
     // Compute the offsets/strides for each set of shaders in the SBT

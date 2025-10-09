@@ -7,6 +7,10 @@
 #include "dxr_utils.h"
 #include "render_backend.h"
 
+#ifdef USE_SLANG_COMPILER
+#include "slang_shader_compiler.h"
+#endif
+
 struct RenderDXR : RenderBackend {
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
     Microsoft::WRL::ComPtr<ID3D12Device5> device;
@@ -44,6 +48,11 @@ struct RenderDXR : RenderBackend {
 
 #ifdef REPORT_RAY_STATS
     std::vector<uint16_t> ray_counts;
+#endif
+
+#ifdef USE_SLANG_COMPILER
+    // Slang shader compiler for runtime compilation
+    chameleonrt::SlangShaderCompiler slangCompiler;
 #endif
 
     RenderDXR(Microsoft::WRL::ComPtr<ID3D12Device5> device);

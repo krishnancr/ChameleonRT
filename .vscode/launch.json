@@ -8,10 +8,10 @@
             "name": "Debug ChameleonRT DXR",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build_vulkan/Debug/chameleonrt.exe",
-            "args": ["slang", "C:/Demo/Assets/CornellBox/CornellBox-Glossy.obj"],
+            "program": "${workspaceFolder}/build/Debug/chameleonrt.exe",
+            "args": ["dxr", "../../test_cube.obj"],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/build/Debug",
             "environment": [],
             "console": "integratedTerminal",            
             // "preLaunchTask": "Build ChameleonRT Debug",
@@ -21,7 +21,8 @@
                 "programOutput": true,
                 "trace": true,
                 "exceptions": true
-            }
+            },
+            "exceptionBreakMode": "all"
         }
     ]
 }

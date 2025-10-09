@@ -475,6 +475,39 @@ if(WIN32 AND ENABLE_SLANG)
 endif()
 ```
 
+### Issue: Missing DXC DLLs for HLSL compilation
+
+```
+Slang compilation failed:
+failed to load downstream compiler 'dxc'
+could not find a suitable pass-through compiler for 'dxc'
+```
+
+**Cause:** Slang requires Microsoft's DXC compiler (`dxcompiler.dll` and `dxil.dll`) for HLSL→DXIL compilation.
+
+**Solution (Automated - Already Implemented):**
+The DXR backend CMakeLists.txt automatically deploys DXC DLLs:
+```cmake
+# In backends/dxr/CMakeLists.txt
+if(ENABLE_DXR_SLANG)
+    # Automatically finds Windows SDK and copies DXC DLLs
+    # Searches versions: 10.0.26100.0, 10.0.22621.0, etc.
+    add_custom_command(TARGET crt_dxr POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${WINSDK_BIN_DIR}/dxcompiler.dll"
+            "$<TARGET_FILE_DIR:crt_dxr>"
+        # ... also copies dxil.dll
+    )
+endif()
+```
+
+**Manual Solution (if needed):**
+Copy DLLs from Windows SDK to output directory:
+```powershell
+Copy-Item "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxcompiler.dll" build\Debug\
+Copy-Item "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxil.dll" build\Debug\
+```
+
 ### Issue: Compilation errors
 
 ```
@@ -554,12 +587,43 @@ spirv-val shader.spv
 
 ## Success Checklist
 
-Before considering integration complete:
+**DXR Backend Integration Status (Updated: Current Session)**
 
-- [ ] CMake finds Slang correctly
-- [ ] Utility library builds without errors
-- [ ] Slang DLLs deploy to output directory
-- [ ] HLSL→DXIL pass-through works (D3D12)
+### Phase 1: Build System & Initialization ✅ COMPLETE
+- [x] CMake finds Slang correctly
+- [x] Utility library builds without errors (`slang_compiler_util.lib`)
+- [x] Slang DLLs deploy to output directory (`slang.dll` in `build/Debug/`)
+- [x] DXR backend builds with Slang support (`crt_dxr.dll` created)
+- [x] Backend plugin loads at runtime (verified with `chameleonrt.exe dxr test_cube.obj`)
+- [x] SlangShaderCompiler member initialized successfully
+- [x] Console output: `[Slang] Compiler initialized successfully` ✅
+- [x] Can build with `-DENABLE_SLANG=OFF` (fallback works - traditional DXR build)
+- [x] Can build with `-DENABLE_DXR_SLANG=ON` (Slang-enabled DXR build)
+
+**Key Learnings:**
+- Plugin architecture requires `crt_dxr.dll` to be built (not just a library)
+- `ENABLE_DXR_SLANG` must be independent of `ENABLE_DXR` (allow separate builds)
+- C++17 required for Slang headers (`std::optional`, inline variables)
+- Header includes must be `#ifdef USE_SLANG_COMPILER` guarded
+
+### Phase 2: Runtime Compilation ✅ COMPLETE
+- [x] HLSL→DXIL pass-through works (D3D12) ✅
+  - [x] Hardcoded shader test (Prompt 2) ✅
+  - [x] File-based shader loading (Prompt 3) ✅
+  - [x] Per-entry-point compilation working ✅
+  - [ ] Production shaders with includes (Prompt 4) - **NEXT**
+- [x] D3D12 pipeline accepts Slang-compiled DXIL ✅
+- [x] Rendering produces correct visual output ✅
+- [x] No D3D12 validation layer errors ✅
+
+**Implementation Details:**
+- API: `getEntryPointCode(entryPointIndex, targetIndex, ...)` per shader
+- Returns: `std::vector<ShaderBlob>` (one blob per entry point)
+- Creates 4 separate `dxr::ShaderLibrary` objects
+- All libraries added to RT pipeline builder
+- Compiled sizes: RayGen=7832, Miss=3132, ShadowMiss=2488, ClosestHit=7112 bytes
+
+### Phase 3: Vulkan & Cross-Platform (Future)
 - [ ] GLSL→SPIRV pass-through works (Vulkan)
 - [ ] First `.slang` shader compiles
 - [ ] Slang shader works on D3D12
@@ -567,7 +631,9 @@ Before considering integration complete:
 - [ ] No visual regressions
 - [ ] Performance acceptable (<5% overhead)
 - [ ] Validation layers happy
-- [ ] Can build with `-DENABLE_SLANG=OFF` (fallback works)
+
+**Current Step:** Prompt 2 in `Migration/prompts/02-dxr-integration-runtime.md`  
+**Test:** Hardcoded HLSL shader compilation at runtime
 
 ---
 

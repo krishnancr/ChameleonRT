@@ -17,11 +17,13 @@
         "*.slang": "hlsl"
     },
     "files.exclude": {
-        "**/.git": true,
-        "**/build": true,
-        "**/build_*": true,
-        "**/*.vcxproj": true,
-        "**/*.vcxproj.filters": true
+        "**/.git": true
+        // Commented out to show build directories during development
+        // Uncomment these if you want to hide build artifacts:
+        // "**/build": true,
+        // "**/build_*": true,
+        // "**/*.vcxproj": true,
+        // "**/*.vcxproj.filters": true
     },
     "search.exclude": {
         "**/build": true,
