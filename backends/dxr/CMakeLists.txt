@@ -104,12 +104,33 @@ if(ENABLE_DXR_SLANG)
         endif()
         
         # Copy shader source files to output directory for runtime compilation
-        add_custom_command(TARGET crt_dxr POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CMAKE_CURRENT_SOURCE_DIR}/simple_lambertian.hlsl"
-                "$<TARGET_FILE_DIR:crt_dxr>/simple_lambertian.hlsl"
-            COMMENT "Deploying simple_lambertian.hlsl for runtime Slang compilation"
+        set(SHADER_FILES
+            render_dxr.hlsl
+            util.hlsl
+            disney_bsdf.hlsl
+            lcg_rng.hlsl
+            lights.hlsl
         )
+        
+        foreach(SHADER_FILE ${SHADER_FILES})
+            add_custom_command(TARGET crt_dxr POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE}"
+                    "$<TARGET_FILE_DIR:crt_dxr>/${SHADER_FILE}"
+                COMMENT "Deploying ${SHADER_FILE} for runtime Slang compilation"
+            )
+        endforeach()
+        
+        # Copy utility header from util directory (for #include "util/texture_channel_mask.h")
+        add_custom_command(TARGET crt_dxr POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:crt_dxr>/util"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${PROJECT_SOURCE_DIR}/util/texture_channel_mask.h"
+                "$<TARGET_FILE_DIR:crt_dxr>/util/texture_channel_mask.h"
+            COMMENT "Deploying util/texture_channel_mask.h for runtime Slang compilation"
+        )
+        
         message(STATUS "Shader files will be deployed to output directory")
     endif()
 endif()

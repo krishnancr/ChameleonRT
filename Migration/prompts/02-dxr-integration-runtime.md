@@ -752,183 +752,251 @@ This prompt is complete when:
 
 ---
 
-## Prompt 4: Load Production Shaders with Manual Include Resolution
+## Prompt 4: Use Slang's Native Include Resolution for Production Shaders
 
 ### Context Setup
 **Files to open:**
-1. `backends/dxr/render_dxr.cpp`
-2. `backends/dxr/render_dxr.hlsl` (production shader)
-3. `backends/dxr/util.hlsl`, `disney_bsdf.hlsl`, etc. (includes)
+1. `util/slang_shader_compiler.cpp` - Modify `compileHLSLToDXILLibrary()` to add search paths
+2. `backends/dxr/render_dxr.cpp` - Update to load production shader with includes
+
+**Key Discovery:** Slang has **native `#include` support** via `SessionDesc.searchPaths`! No manual preprocessing needed.
+
+**Reference:** Falcor's `ProgramManager.cpp` (line 642) shows production usage:
+```cpp
+sessionDesc.searchPaths = slangSearchPaths.data();
+sessionDesc.searchPathCount = (SlangInt)slangSearchPaths.size();
+```
 
 ### Prompt
 
 ```
-Task: Implement manual include resolution for production shaders
+Task: Add search path support to SlangShaderCompiler for automatic #include resolution
 
 Context:
-- Simple Lambertian shader works (Prompt 3)
-- Now loading full render_dxr.hlsl with Disney BRDF, lighting, etc.
-- Has #include directives that need manual resolution
-- Include path: backends/dxr/ and util/
+- Simple Lambertian shader works (Prompt 3 ✅)
+- Now loading production shaders with #include directives
+- Slang handles includes automatically when search paths are provided
+- No manual preprocessing needed!
 
-Production shader includes:
+Production shader example (render_dxr.hlsl):
+```hlsl
 #include "util.hlsl"
 #include "lcg_rng.hlsl"
 #include "disney_bsdf.hlsl"
 #include "lights.hlsl"
-#include "util/texture_channel_mask.h"
+```
 
 Requirements:
 
-1. Upgrade loadShaderSource to handle includes:
+1. **Update SlangShaderCompiler header** - Add search paths parameter:
+
+In `util/slang_shader_compiler.h`, update the library compilation signature:
 ```cpp
-namespace {
-    std::string resolveIncludes(const std::string& source, 
-                                const std::string& base_path,
-                                std::set<std::string>& processed) {
-        std::stringstream result;
-        std::istringstream stream(source);
-        std::string line;
-        
-        while (std::getline(stream, line)) {
-            // Check for #include directive
-            size_t include_pos = line.find("#include");
-            if (include_pos != std::string::npos) {
-                // Extract filename between quotes
-                size_t quote1 = line.find('"', include_pos);
-                size_t quote2 = line.find('"', quote1 + 1);
-                
-                if (quote1 != std::string::npos && quote2 != std::string::npos) {
-                    std::string include_file = line.substr(quote1 + 1, quote2 - quote1 - 1);
-                    std::string include_path = base_path + "/" + include_file;
-                    
-                    // Prevent circular includes
-                    if (processed.find(include_path) == processed.end()) {
-                        processed.insert(include_path);
-                        
-                        std::cout << "[Slang]   Including: " << include_file << std::endl;
-                        
-                        // Load and recursively resolve the include
-                        std::string included_source = loadShaderSource(include_path);
-                        std::string resolved = resolveIncludes(included_source, base_path, processed);
-                        result << resolved << "\n";
-                    }
-                    continue;  // Skip the #include line itself
-                }
-            }
-            
-            result << line << "\n";
-        }
-        
-        return result.str();
-    }
-    
-    std::string loadShaderSource(const std::string& filename) {
-        std::ifstream file(filename);
-        if (!file.is_open()) {
-            throw std::runtime_error("Failed to open shader file: " + filename);
-        }
-        
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        return buffer.str();
-    }
-    
-    std::string loadShaderSourceWithIncludes(const std::string& filename) {
-        std::cout << "[Slang] Loading shader with includes: " << filename << std::endl;
-        
-        std::string source = loadShaderSource(filename);
-        
-        // Get base path
-        size_t last_slash = filename.find_last_of("/\\");
-        std::string base_path = (last_slash != std::string::npos) 
-                              ? filename.substr(0, last_slash) 
-                              : ".";
-        
-        std::set<std::string> processed;
-        std::string resolved = resolveIncludes(source, base_path, processed);
-        
-        std::cout << "[Slang] Total source size after includes: " 
-                  << resolved.size() << " bytes" << std::endl;
-        
-        return resolved;
-    }
-}
-```
-
-2. Add <set> include at top:
-```cpp
-#include <set>
-```
-
-3. In build_raytracing_pipeline(), load production shader:
-```cpp
-// Load production shader with all includes
-std::string shader_path = "backends/dxr/render_dxr.hlsl";
-std::string hlsl_source = loadShaderSourceWithIncludes(shader_path);
-
-std::cout << "[Slang] Compiling production shader (Disney BRDF)..." << std::endl;
-
-auto result = slangCompiler.compileHLSLToDXIL(
-    hlsl_source,
-    "RayGen",
-    chameleonrt::ShaderStage::Library
-);
-
-if (!result) {
-    std::cerr << "[Slang] Compilation failed:" << std::endl;
-    std::cerr << slangCompiler.getLastError() << std::endl;
-    throw std::runtime_error("Production shader compilation failed");
-}
-
-std::cout << "[Slang] Production shader compiled: " 
-          << result->bytecode.size() << " bytes" << std::endl;
-
-dxr::ShaderLibrary shader_library(
-    result->bytecode.data(),
-    result->bytecode.size(),
-    {L"RayGen", L"Miss", L"ClosestHit", L"ShadowMiss"}  // All 4 entry points back
+/**
+ * Compile HLSL to DXIL Library (for DXR - multiple entry points)
+ * This compiles each entry point separately using getEntryPointCode()
+ * following the GFX layer pattern from Slang's tools/gfx/renderer-shared.cpp
+ * @param source HLSL shader source code with multiple entry points
+ * @param searchPaths Directories to search for #include files (optional)
+ * @param defines Preprocessor defines (optional)
+ * @return Vector of compiled shader blobs (one per entry point) or nullopt on failure
+ */
+std::optional<std::vector<ShaderBlob>> compileHLSLToDXILLibrary(
+    const std::string& source,
+    const std::vector<std::string>& searchPaths = {},
+    const std::vector<std::string>& defines = {}
 );
 ```
 
-4. Restore full pipeline config:
-- Re-add `.add_miss_shader(L"ShadowMiss")`
-- Ensure all hit groups configured
+2. **Update implementation** - Add search paths to SessionDesc:
+
+In `util/slang_shader_compiler.cpp`, in `compileHLSLToDXILLibrary()`:
+
+Find this section (around line 60):
+```cpp
+    // Create session description
+    slang::SessionDesc sessionDesc = {};
+    slang::TargetDesc targetDesc = {};
+    targetDesc.format = SLANG_DXIL;
+    targetDesc.profile = globalSession->findProfile("lib_6_6");
+    
+    sessionDesc.targets = &targetDesc;
+    sessionDesc.targetCount = 1;
+```
+
+Replace with:
+```cpp
+    // Create session description
+    slang::SessionDesc sessionDesc = {};
+    slang::TargetDesc targetDesc = {};
+    targetDesc.format = SLANG_DXIL;
+    targetDesc.profile = globalSession->findProfile("lib_6_6");
+    
+    sessionDesc.targets = &targetDesc;
+    sessionDesc.targetCount = 1;
+    
+    // Add search paths for #include resolution (if provided)
+    std::vector<const char*> searchPathPtrs;
+    if (!searchPaths.empty()) {
+        searchPathPtrs.reserve(searchPaths.size());
+        for (const auto& path : searchPaths) {
+            searchPathPtrs.push_back(path.c_str());
+        }
+        sessionDesc.searchPaths = searchPathPtrs.data();
+        sessionDesc.searchPathCount = (SlangInt)searchPathPtrs.size();
+    }
+```
+
+3. **Update DXR backend** - Pass shader directory as search path:
+
+In `backends/dxr/render_dxr.cpp`, update the shader loading section:
+
+Find this section (around line 670):
+```cpp
+#ifdef USE_SLANG_COMPILER
+    // Get shader path relative to DLL location
+    std::filesystem::path dll_dir = get_dll_directory();
+    std::filesystem::path shader_path = dll_dir / "simple_lambertian.hlsl";
+    
+    // Load shader source from file
+    std::string hlsl_source;
+    try {
+        hlsl_source = load_shader_source(shader_path);
+    } catch (const std::exception& e) {
+        std::cerr << "[Slang] ERROR loading shader: " << e.what() << std::endl;
+        throw;
+    }
+    
+    // Compile HLSL to DXIL using Slang (per-entry-point compilation)
+    auto result = slangCompiler.compileHLSLToDXILLibrary(hlsl_source);
+```
+
+Replace with:
+```cpp
+#ifdef USE_SLANG_COMPILER
+    // Get shader path relative to DLL location
+    std::filesystem::path dll_dir = get_dll_directory();
+    std::filesystem::path shader_path = dll_dir / "simple_lambertian.hlsl";
+    
+    // Load shader source from file
+    std::string hlsl_source;
+    try {
+        hlsl_source = load_shader_source(shader_path);
+    } catch (const std::exception& e) {
+        std::cerr << "[Slang] ERROR loading shader: " << e.what() << std::endl;
+        throw;
+    }
+    
+    // Setup search paths for #include resolution
+    // Slang will automatically resolve #include directives in these directories
+    std::vector<std::string> searchPaths = {
+        dll_dir.string(),  // Shader directory (for local includes)
+        (dll_dir.parent_path() / "util").string()  // Utility headers (if needed)
+    };
+    
+    // Compile HLSL to DXIL using Slang (per-entry-point compilation)
+    // Slang handles #include resolution automatically using searchPaths
+    auto result = slangCompiler.compileHLSLToDXILLibrary(hlsl_source, searchPaths);
+```
 
 Please:
-- Add include resolution functions
-- Update to load production shader
-- Add comprehensive error output (show Slang errors in full)
-- Test with full Disney BRDF rendering
+- Use replace_string_in_file with sufficient context (5+ lines before/after)
+- Update header signature first
+- Update implementation to use search paths
+- Update backend to pass search paths
+- Test with simple_lambertian.hlsl first (no includes, should still work)
+- Then test with production shader that has includes
 ```
 
 ### Expected Output
 
-- Include resolution functions added
-- Production shader loads with all dependencies
-- Console shows each include being loaded
-- Full shader compiles successfully
-- All 4 entry points exported
+**With simple_lambertian.hlsl (no includes):**
+```
+Loading OBJ: ../../test_cube.obj
+Scene loaded successfully
+```
+Should work exactly as before (search paths just ignored if no includes)
+
+**With production shader (has includes):**
+```
+Loading OBJ: ../../test_cube.obj
+Scene loaded successfully
+# Triangles: 12
+```
+Slang automatically resolves all #include directives
 
 ### Validation Checklist
 
-- [ ] **All includes load:** Console shows each #include file
+**Phase 1: Verify No Regression**
+- [ ] **Builds cleanly:** No compile errors from signature change
+- [ ] **simple_lambertian.hlsl still works:** No includes, search paths don't break anything
+- [ ] **Rendering unchanged:** Visual output same as before
 
-- [ ] **Large source:** After includes, source is ~2000+ bytes
+**Phase 2: Test Production Shader** (if you have one with includes)
+- [ ] **Load shader with includes:** e.g., `render_dxr.hlsl`
+- [ ] **Compilation succeeds:** Slang resolves all #include directives
+- [ ] **All entry points found:** RayGen, Miss, ShadowMiss, ClosestHit compile
+- [ ] **Renders correctly:** Full Disney BRDF shading works
+- [ ] **No manual preprocessing needed:** Slang handles everything!
 
-- [ ] **Compiles:** Slang compiles full production shader
+**Debug Output:**
+If compilation fails with include errors, check:
+```cpp
+// Add temporary debug output to verify search paths:
+std::cout << "[Slang] Search paths configured:" << std::endl;
+for (const auto& path : searchPaths) {
+    std::cout << "  - " << path << std::endl;
+}
+```
 
-- [ ] **Renders correctly:** Application shows:
-  - Proper Disney BRDF shading
-  - Textures (if scene has them)
-  - Shadows from ShadowMiss
-  - Lighting
+### Troubleshooting
 
-- [ ] **Matches embedded version:** Compare output with original (if you have it)
-  - Visual quality should be identical
-  - Performance may be slightly slower (first compile)
+**Problem:** "Cannot open include file 'util.hlsl'"  
+**Solution:**  
+1. Verify search paths point to correct directories
+2. Check that included files exist: `Test-Path <dll_dir>\util.hlsl`
+3. Try absolute paths instead of relative if needed
 
-- [ ] **No compilation errors:** Clean Slang output
+**Problem:** "Circular include detected"  
+**Solution:** Slang handles this automatically - shouldn't happen
+
+**Problem:** Still works with simple shader but fails with production shader  
+**Solution:**  
+1. Check production shader path is correct
+2. Verify all included files are deployed to output directory
+3. Add more search paths if includes are in different directories
+
+### What Success Looks Like
+
+**Simple shader (no includes) - Should work unchanged:**
+```
+Loading OBJ: ../../test_cube.obj
+Scene renders correctly
+```
+
+**Production shader (with includes) - Automatic resolution:**
+```
+Loading OBJ: ../../test_cube.obj
+Scene renders with full Disney BRDF
+No manual preprocessing needed!
+Slang automatically found and included:
+  - util.hlsl
+  - lcg_rng.hlsl
+  - disney_bsdf.hlsl
+  - lights.hlsl
+```
+
+### Success Criteria
+
+This prompt is complete when:
+- ✅ Search paths parameter added to `compileHLSLToDXILLibrary()`
+- ✅ `SessionDesc.searchPaths` configured correctly
+- ✅ Simple shader still works (no regression)
+- ✅ Production shaders with #include directives compile automatically
+- ✅ No manual include preprocessing needed
+- ✅ Rendering works correctly with included files
+
+**Key Benefit:** Slang handles all include resolution, preprocessing, and circular dependency detection automatically!
 
 **Next:** Prompt 5 - Add shader hot-reload (optional)
 

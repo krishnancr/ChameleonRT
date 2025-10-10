@@ -89,11 +89,13 @@ public:
      * This compiles each entry point separately using getEntryPointCode()
      * following the GFX layer pattern from Slang's tools/gfx/renderer-shared.cpp
      * @param source HLSL shader source code with multiple entry points
+     * @param searchPaths Directories to search for #include files (optional)
      * @param defines Preprocessor defines (optional)
      * @return Vector of compiled shader blobs (one per entry point) or nullopt on failure
      */
     std::optional<std::vector<ShaderBlob>> compileHLSLToDXILLibrary(
         const std::string& source,
+        const std::vector<std::string>& searchPaths = {},
         const std::vector<std::string>& defines = {}
     );
     

@@ -50,6 +50,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileGLSLToSPIRV(
 
 std::optional<std::vector<ShaderBlob>> SlangShaderCompiler::compileHLSLToDXILLibrary(
     const std::string& source,
+    const std::vector<std::string>& searchPaths,
     const std::vector<std::string>& defines
 ) {
     if (!globalSession) {
@@ -66,6 +67,17 @@ std::optional<std::vector<ShaderBlob>> SlangShaderCompiler::compileHLSLToDXILLib
     
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
+    
+    // Add search paths for #include resolution (if provided)
+    std::vector<const char*> searchPathPtrs;
+    if (!searchPaths.empty()) {
+        searchPathPtrs.reserve(searchPaths.size());
+        for (const auto& path : searchPaths) {
+            searchPathPtrs.push_back(path.c_str());
+        }
+        sessionDesc.searchPaths = searchPathPtrs.data();
+        sessionDesc.searchPathCount = (SlangInt)searchPathPtrs.size();
+    }
     
     // Create session for this compilation
     Slang::ComPtr<slang::ISession> compileSession;

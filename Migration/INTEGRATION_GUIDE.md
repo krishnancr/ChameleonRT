@@ -7,6 +7,70 @@ Step-by-step instructions for integrating Slang shader compilation into Chameleo
 **Target Audience:** Yourself (in the new branch, following these instructions)  
 **Prerequisites:** Migration/ directory copied, basic understanding of backend structure
 
+**Status:** DXR backend COMPLETE ✅ | Vulkan backend PENDING
+
+---
+
+## Lessons Learned from DXR Integration
+
+### ✅ What Works Well
+
+**1. Per-Entry-Point Compilation Pattern**
+- Use `getEntryPointCode()` for each entry point separately
+- Avoids Slang `getTargetCode()` bug with DXIL multi-entry libraries
+- Proven pattern from Slang's GFX layer (`tools/gfx/renderer-shared.cpp`)
+- More flexible: each entry point gets own shader blob
+
+**2. Native Include Resolution**
+- Slang handles `#include` automatically via `SessionDesc.searchPaths`
+- No manual preprocessing needed
+- Simple: just provide search paths array
+- Production example: Falcor's `ProgramManager.cpp:642`
+
+**3. DLL-Relative Path Loading**
+- Get DLL location with `GetModuleHandleExA()` / `GetModuleFileNameA()`
+- Load shaders from same directory as backend DLL
+- Enables runtime shader editing/hot-reload
+
+**4. Automated Dependency Deployment**
+- CMake `POST_BUILD` commands deploy all needed files:
+  - Shader source files (.hlsl, .glsl)
+  - Include headers (.h)
+  - DXC DLLs (for HLSL → DXIL via Slang)
+  - Slang DLLs
+
+### ⚠️ Pitfalls to Avoid
+
+**1. Don't Use getTargetCode() for DXIL Multi-Entry Libraries**
+- Crashes with `Slang::InternalError` when compiling HLSL → DXIL with multiple entry points
+- Workaround: Use `getEntryPointCode()` per entry point
+
+**2. Don't Manually Preprocess Includes**
+- Slang has native `SessionDesc.searchPaths` API
+- Manual preprocessing is ~100 lines of unnecessary code
+- Always check Slang API documentation first!
+
+**3. Don't Initialize in Constructor**
+- For plugin DLL backends, device may not be ready in constructor
+- Initialize in post-construction method (e.g., `create_device_objects()`)
+
+**4. Don't Forget DXC DLLs for HLSL**
+- Slang needs `dxcompiler.dll` + `dxil.dll` for HLSL → DXIL
+- Auto-deploy via CMake, don't rely on system PATH
+
+### 📋 Recommended Implementation Order
+
+**For Any Backend:**
+1. **Prompt 1:** SlangShaderCompiler integration (infrastructure)
+2. **Prompt 2:** Hardcoded test shader (proves compilation works)
+3. **Prompt 3:** File loading + per-entry-point compilation
+4. **Prompt 4:** Native include resolution (production shaders)
+
+**Testing Strategy:**
+- Test 1: Simple scene (test_cube.obj) - fast iteration
+- Test 2: Complex scene (sponza.obj) - real-world validation
+- Clean rebuild before final verification
+
 ---
 
 ## Quick Reference

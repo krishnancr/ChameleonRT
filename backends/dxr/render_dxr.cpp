@@ -648,7 +648,7 @@ void RenderDXR::build_raytracing_pipeline()
 #ifdef USE_SLANG_COMPILER
     // Get shader path relative to DLL location
     std::filesystem::path dll_dir = get_dll_directory();
-    std::filesystem::path shader_path = dll_dir / "simple_lambertian.hlsl";
+    std::filesystem::path shader_path = dll_dir / "render_dxr.hlsl";  // Production shader with includes
     
     // Load shader source from file
     std::string hlsl_source;
@@ -659,8 +659,16 @@ void RenderDXR::build_raytracing_pipeline()
         throw;
     }
     
+    // Setup search paths for #include resolution
+    // Slang will automatically resolve #include directives in these directories
+    std::vector<std::string> searchPaths = {
+        dll_dir.string(),  // Shader directory (for local includes)
+        (dll_dir.parent_path() / "util").string()  // Utility headers (texture_channel_mask.h)
+    };
+    
     // Compile HLSL to DXIL using Slang (per-entry-point compilation)
-    auto result = slangCompiler.compileHLSLToDXILLibrary(hlsl_source);
+    // Slang handles #include resolution automatically using searchPaths
+    auto result = slangCompiler.compileHLSLToDXILLibrary(hlsl_source, searchPaths);
     
     if (!result) {
         std::string error = slangCompiler.getLastError();

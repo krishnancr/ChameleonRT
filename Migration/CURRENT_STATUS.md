@@ -1,13 +1,15 @@
 # Current Integration Status
 
-**Last Updated:** Current Session - Prompt 3 COMPLETED ✅  
+**Last Updated:** Current Session - DXR Integration COMPLETE ✅  
 **Branch:** `feature/slang-integration`
 
 ---
 
 ## ✅ What We've Completed
 
-### Prompt 1: SlangShaderCompiler Integration ✅
+### Phase 1: DXR Backend Integration - COMPLETE ✅
+
+#### Prompt 1: SlangShaderCompiler Integration ✅
 **Status:** ✅ **COMPLETE**
 
 **Achievements:**
@@ -106,12 +108,68 @@ Only errors show `[Slang] ERROR:` prefix.
 - `backends/dxr/render_dxr.cpp` - Create multiple libraries, add all to pipeline
 - All debug prints removed, clean production code
 
+### Prompt 4: Native Include Resolution ✅
+**Status:** ✅ **COMPLETE** - Production shader with complex includes working!
+
+**Achievements:**
+1. ✅ **Slang native include support discovered** - No manual preprocessing needed!
+2. ✅ **SessionDesc.searchPaths API used** - Following Falcor production pattern
+3. ✅ **Production shader loaded** - `render_dxr.hlsl` with 5 includes
+4. ✅ **All includes auto-resolved** - Both local and cross-directory includes
+5. ✅ **Complex scene tested** - Sponza (262K triangles, 25 materials, 24 textures)
+6. ✅ **Clean rebuild verified** - Fresh build from scratch works perfectly
+
+**Include Resolution:**
+- `#include "util.hlsl"` → Found in shader directory
+- `#include "lcg_rng.hlsl"` → Found in shader directory
+- `#include "disney_bsdf.hlsl"` → Found in shader directory
+- `#include "lights.hlsl"` → Found in shader directory
+- `#include "util/texture_channel_mask.h"` → Found via util search path
+
+**Technical Implementation:**
+```cpp
+// In util/slang_shader_compiler.cpp
+std::vector<const char*> searchPathPtrs;
+if (!searchPaths.empty()) {
+    searchPathPtrs.reserve(searchPaths.size());
+    for (const auto& path : searchPaths) {
+        searchPathPtrs.push_back(path.c_str());
+    }
+    sessionDesc.searchPaths = searchPathPtrs.data();
+    sessionDesc.searchPathCount = (SlangInt)searchPathPtrs.size();
+}
+
+// In backends/dxr/render_dxr.cpp
+std::vector<std::string> searchPaths = {
+    dll_dir.string(),  // Shader directory
+    (dll_dir.parent_path() / "util").string()  // Utility headers
+};
+auto result = slangCompiler.compileHLSLToDXILLibrary(hlsl_source, searchPaths);
+```
+
+**Test Results:**
+- **Test Cube:** 12 triangles, 1 material → ✅ Renders correctly
+- **Sponza:** 262,267 triangles, 25 materials, 24 textures → ✅ Loads and renders
+
+**Files Modified:**
+- `util/slang_shader_compiler.h` - Added `searchPaths` parameter
+- `util/slang_shader_compiler.cpp` - Configure `SessionDesc.searchPaths`
+- `backends/dxr/render_dxr.cpp` - Pass search paths, load production shader
+- `backends/dxr/CMakeLists.txt` - Deploy all shader files + util headers
+- Removed `simple_lambertian.hlsl` test shader (no longer needed)
+
+**Key Learning:**
+Originally planned manual preprocessing with `resolveIncludes()` function (~100 lines of code).
+User correctly identified that Slang should handle includes natively.
+Investigation confirmed: Slang has built-in include resolution via `SessionDesc.searchPaths`.
+**Result:** 10 lines of code instead of 100+, more robust, follows Slang's design.
+
 ---
 
-## 📍 Current Step: Ready for Prompt 4
+## 📍 Next Step: Vulkan Backend Integration
 
 ### Objective
-Production shaders with `#include` directives - Implement Slang include handler
+Apply same integration pattern to Vulkan backend: GLSL → SPIRV compilation
 
 ---
 
@@ -164,65 +222,40 @@ Application should:
 
 ---
 
-## 🎯 Quick Start for Next Session
+## 🎯 Quick Start for Vulkan Integration
 
 ### Current Status Summary
-- ✅ Prompt 1: SlangShaderCompiler integration COMPLETE
-- ✅ Prompt 2: Hardcoded test shader COMPLETE  
-- ✅ Prompt 3: File loading + per-entry-point compilation COMPLETE
-- 🎯 Next: Prompt 4 - Production shaders with includes
+- ✅ **DXR Backend:** COMPLETE - All 4 prompts done
+  - Prompt 1: SlangShaderCompiler integration ✅
+  - Prompt 2: Hardcoded test shader ✅  
+  - Prompt 3: File loading + per-entry-point compilation ✅
+  - Prompt 4: Native include resolution ✅
+- 🎯 **Next:** Vulkan Backend - Same pattern for GLSL → SPIRV
 
-### Objective for Next Session
-Implement Slang include handler to support production shaders with `#include` directives
+### Objective for Vulkan
+Apply identical integration pattern to Vulkan backend:
+1. Integrate SlangShaderCompiler into Vulkan backend
+2. Test with hardcoded GLSL shader → SPIRV
+3. Load production shader from file
+4. Use native include resolution for GLSL includes
 
-### Location
-**Documentation:** `Migration/prompts/02-dxr-integration-runtime.md`  
-**Section:** Prompt 4 (to be created based on Prompt 3 completion)
+### Key Differences from DXR
+- **Source Language:** GLSL instead of HLSL
+- **Target Format:** SPIRV instead of DXIL
+- **Shader Profile:** `sm_6_5` → Vulkan 1.2/1.3
+- **No getTargetCode() bug:** SPIRV compilation works with multi-entry approach
+- **Otherwise identical:** Same SlangShaderCompiler API, same search paths pattern
 
-### What to Do
-1. Implement `ISlangFileSystem` interface for include resolution
-2. Update shader loading to use file system interface
-3. Test with `render_dxr.hlsl` (has multiple includes)
-4. Verify all included files resolve correctly
-
-### Expected Challenge
-Production shader has includes:
-```hlsl
-#include "util.hlsl"
-#include "lcg_rng.hlsl"
-#include "disney_bsdf.hlsl"
-#include "lights.hlsl"
-```
-
-Need to implement path resolution for these files relative to main shader.
-
----
-
-## 🎯 Previous Session Achievements
-
-### Prompt 3 Session Highlights
-**Major Achievement:** Avoided a Slang compiler bug and implemented robust workaround
-
-**Investigation Process:**
-1. Initial attempt: `getTargetCode()` for whole library → Crashed with `Slang::InternalError`
-2. Debugging: Tried 1, 2, 4 entry points → All crashed except single entry point
-3. Analysis: Compared with Slang unit tests and GFX layer implementation
-4. Discovery: GFX uses `getEntryPointCode()` per entry point, NOT `getTargetCode()`
-5. Solution: Implemented per-entry-point compilation (Option B)
-6. Result: All 4 shaders compile successfully, pipeline works perfectly
-
-**Technical Learnings:**
-- `getTargetCode()` works for SPIRV but not DXIL multi-entry libraries from HLSL
-- D3D12 RT pipeline natively supports multiple DXIL library subobjects
-- Per-entry-point compilation is the production-proven approach (Slang GFX layer)
-- Each shader gets its own `dxr::ShaderLibrary` with single export
+### Documentation
+**Prompt File:** `Migration/prompts/03-vulkan-integration-runtime.md`  
+**Status:** Updated based on DXR learnings
 
 ---
 
 ## 📂 Key Files Reference
 
 ### Documentation
-- `Migration/prompts/02-dxr-integration-runtime.md` - Full prompt sequence
+- `Migration/prompts/02-dxr-integration-runtime.md` - DXR prompt sequence (COMPLETE)
 - `Migration/INTEGRATION_GUIDE.md` - Overall integration guide
 - `Migration/CURRENT_STATUS.md` - This file
 
@@ -244,20 +277,19 @@ Need to implement path resolution for these files relative to main shader.
 ### Check Build
 ```powershell
 cmake --build build --config Debug --target crt_dxr
-```
-
-### Check DLL
-```powershell
-Test-Path build\Debug\crt_dxr.dll  # Should be True
-```
-
-### Run Test
+### Run Test (Test Cube)
 ```powershell
 cd build\Debug
 .\chameleonrt.exe dxr ..\..\test_cube.obj
 ```
 
-### Expected Console Output (Current - Clean)
+### Run Test (Sponza)
+```powershell
+cd build\Debug
+.\chameleonrt.exe dxr C:\Demo\Assets\sponza\sponza.obj
+```
+
+### Expected Console Output (Clean - Production)
 ```
 Loading OBJ: ../../test_cube.obj
 Scene loaded successfully
@@ -265,6 +297,7 @@ Scene loaded successfully
 # Meshes: 1
 ```
 Only errors show `[Slang] ERROR:` prefix. No verbose debug output.
+Shader compilation happens silently in background - success means no output!
 
 ---
 
@@ -281,6 +314,7 @@ Only errors show `[Slang] ERROR:` prefix. No verbose debug output.
 
 ### Runtime Crash
 - Check `slang.dll` is in same directory as `chameleonrt.exe`
+- Check `dxcompiler.dll` and `dxil.dll` deployed (for HLSL compilation)
 - Check `crt_dxr.dll` exists
 - Enable D3D12 debug layer for validation errors
 
@@ -289,23 +323,75 @@ Only errors show `[Slang] ERROR:` prefix. No verbose debug output.
 - Check `slang_compiler_util` is linked in CMakeLists.txt
 - Verify build was with `-EnableDXRSlang` flag
 
----
-
-## 📝 Notes for Future Reference
-
-### Discoveries from Prompt 1 Implementation
-1. **Plugin Architecture:** ChameleonRT uses dynamically loaded backend DLLs, not static libraries
-2. **CMake Dependencies:** `cmake_dependent_option` was too restrictive (required both parent flags)
-3. **C++ Standard:** Slang requires C++17, DXR backend was C++14
-4. **Include Guards:** Must guard both header includes AND member variables
-5. **Dual Build Paths:** Can build both traditional DXR and Slang DXR independently
-
-### Modified Prompt Insights
-- Original prompt assumed library linking, but it's a DLL plugin system
-- Early return in CMakeLists.txt was blocking the build entirely
-- Header file needed include guard, not just forward declaration
-- Initialization must be in `create_device_objects()`, not constructor (device not ready yet)
+### Include Resolution Fails
+- Check all shader files deployed to `build/Debug/`
+- Check `util/` subdirectory exists with `texture_channel_mask.h`
+- Verify search paths include both shader dir and parent/util dir
 
 ---
 
-**Ready for Next Step!** 🚀
+## 📝 DXR Integration Learnings
+
+### Critical Discoveries
+
+**1. Slang getTargetCode() Bug (Prompt 3)**
+- **Issue:** Crashes with `Slang::InternalError` for DXIL multi-entry libraries from HLSL
+- **Workaround:** Use `getEntryPointCode()` per entry point (GFX layer pattern)
+- **Benefit:** More flexible, proven in production, avoids untested code path
+
+**2. Native Include Resolution (Prompt 4)**
+- **Discovery:** Slang has built-in include support via `SessionDesc.searchPaths`
+- **Initially planned:** Manual preprocessing with `resolveIncludes()` (~100 lines)
+- **Actually needed:** Simple search path configuration (~10 lines)
+- **Key:** Always check API documentation before implementing workarounds!
+
+**3. DXC Dependency for HLSL**
+- **Requirement:** Slang needs `dxcompiler.dll` + `dxil.dll` for HLSL → DXIL compilation
+- **Solution:** Automated deployment via CMake POST_BUILD commands
+- **Location:** Windows SDK bin directory (version-specific)
+
+**4. Plugin Architecture Considerations**
+- **Discovery:** ChameleonRT backends are DLLs, not static libraries
+- **Impact:** Initialization timing matters (device not ready in constructor)
+- **Solution:** Initialize in `create_device_objects()` after device creation
+
+### Implementation Patterns That Work
+
+**1. Error Handling**
+```cpp
+if (!result) {
+    std::string error = slangCompiler.getLastError();
+    std::cerr << "[Slang] Compilation failed: " << error << std::endl;
+    throw std::runtime_error("Slang shader compilation failed");
+}
+```
+
+**2. DLL-Relative Path Resolution**
+```cpp
+std::filesystem::path dll_dir = get_dll_directory();  // Where crt_dxr.dll lives
+std::filesystem::path shader_path = dll_dir / "render_dxr.hlsl";
+```
+
+**3. Search Path Configuration**
+```cpp
+std::vector<std::string> searchPaths = {
+    dll_dir.string(),  // Shader directory
+    (dll_dir.parent_path() / "util").string()  // Utility headers
+};
+```
+
+**4. Per-Entry-Point Compilation**
+```cpp
+std::vector<ShaderBlob> entryPointBlobs;
+for (size_t i = 0; i < entryPointObjs.size(); ++i) {
+    Slang::ComPtr<slang::IBlob> code;
+    linkedProgram->getEntryPointCode(i, 0, code.writeRef(), diagnostics.writeRef());
+    // Create ShaderBlob from code
+}
+```
+
+---
+
+**DXR Integration COMPLETE!** Ready for Vulkan! 🚀
+
+
