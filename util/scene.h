@@ -31,6 +31,16 @@ struct Scene {
     uint32_t samples_per_pixel = 1;
     MaterialMode material_mode = MaterialMode::DEFAULT;
 
+    // Phase 2A.1: Global buffers for GPU upload
+    std::vector<Vertex> global_vertices;           // All vertices concatenated
+    std::vector<uint32_t> global_indices;          // All indices concatenated (as uints, not uvec3)
+    std::vector<MeshDesc> mesh_descriptors;        // Metadata per geometry
+    std::vector<GeometryInstanceData> geometry_instances; // Metadata per instance
+    std::vector<glm::mat4> transform_matrices;     // Transform per instance
+    
+    // Helper function to build global buffers
+    void build_global_buffers();
+
     Scene(const std::string &fname, MaterialMode material_mode);
     Scene() = default;
 

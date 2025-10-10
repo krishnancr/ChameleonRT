@@ -45,3 +45,40 @@ struct Instance {
 
     Instance() = default;
 };
+
+// Phase 2A.1: Global buffer structures
+
+// Unified vertex structure (combines position, normal, texCoord)
+struct Vertex {
+    glm::vec3 position;
+    glm::vec3 normal;
+    glm::vec2 texCoord;
+    
+    Vertex() = default;
+    Vertex(const glm::vec3& pos, const glm::vec3& norm, const glm::vec2& uv)
+        : position(pos), normal(norm), texCoord(uv) {}
+};
+
+// Mesh descriptor (offset into global buffers)
+struct MeshDesc {
+    uint32_t vbOffset;      // Offset into global vertex buffer
+    uint32_t ibOffset;      // Offset into global index buffer
+    uint32_t vertexCount;   // Number of vertices
+    uint32_t indexCount;    // Number of indices (triangles * 3)
+    uint32_t materialID;    // Material index
+    
+    MeshDesc() = default;
+    MeshDesc(uint32_t vb, uint32_t ib, uint32_t vc, uint32_t ic, uint32_t mat)
+        : vbOffset(vb), ibOffset(ib), vertexCount(vc), indexCount(ic), materialID(mat) {}
+};
+
+// Geometry instance data (for TLAS instances)
+struct GeometryInstanceData {
+    uint32_t meshID;        // Index into MeshDesc array
+    uint32_t matrixID;      // Index into transform matrix array
+    uint32_t flags;         // Instance flags (e.g., double-sided)
+    
+    GeometryInstanceData() = default;
+    GeometryInstanceData(uint32_t mesh, uint32_t mat, uint32_t f = 0)
+        : meshID(mesh), matrixID(mat), flags(f) {}
+};
