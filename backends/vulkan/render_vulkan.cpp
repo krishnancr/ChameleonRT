@@ -53,6 +53,13 @@ RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
     pool_ci.queryCount = 2;
     CHECK_VULKAN(
         vkCreateQueryPool(device->logical_device(), &pool_ci, nullptr, &timing_query_pool));
+
+#ifdef USE_SLANG_COMPILER
+    // Initialize Slang shader compiler
+    if (!slangCompiler.isValid()) {
+        throw std::runtime_error("Failed to initialize Slang shader compiler");
+    }
+#endif
 }
 
 RenderVulkan::RenderVulkan() : RenderVulkan(std::make_shared<vkrt::Device>())
@@ -799,6 +806,107 @@ void RenderVulkan::build_raytracing_pipeline()
 
     CHECK_VULKAN(vkCreatePipelineLayout(
         device->logical_device(), &pipeline_create_info, nullptr, &pipeline_layout));
+
+#ifdef USE_SLANG_COMPILER
+    // ======================================================================
+    // VULKAN PROMPT 2: Test Basic GLSL → SPIRV Compilation
+    // ======================================================================
+    // Test 1: Simple fragment shader (no extensions, no ray tracing)
+    std::cout << "\n[Slang Vulkan] Testing basic GLSL → SPIRV compilation..." << std::endl;
+    
+    const std::string simple_frag_glsl = R"(
+#version 450
+
+layout(location = 0) in vec3 fragColor;
+layout(location = 0) out vec4 outColor;
+
+void main() {
+    outColor = vec4(fragColor, 1.0);
+}
+)";
+
+    std::cout << "[Slang Vulkan] Compiling simple fragment shader..." << std::endl;
+    auto frag_result = slangCompiler.compileGLSLToSPIRV(
+        simple_frag_glsl, "main", chameleonrt::ShaderStage::Fragment);
+    
+    if (!frag_result) {
+        std::string error = slangCompiler.getLastError();
+        std::cerr << "[Slang Vulkan] Fragment shader compilation FAILED: " << error << std::endl;
+        throw std::runtime_error("Basic GLSL fragment shader compilation failed");
+    }
+    
+    std::cout << "[Slang Vulkan] Fragment shader compiled! SPIRV size: " 
+              << frag_result->bytecode.size() << " bytes" << std::endl;
+    
+    // Test 2: Simple vertex shader
+    const std::string simple_vert_glsl = R"(
+#version 450
+
+layout(location = 0) in vec3 inPosition;
+layout(location = 1) in vec3 inColor;
+
+layout(location = 0) out vec3 fragColor;
+
+void main() {
+    gl_Position = vec4(inPosition, 1.0);
+    fragColor = inColor;
+}
+)";
+
+    std::cout << "[Slang Vulkan] Compiling simple vertex shader..." << std::endl;
+    auto vert_result = slangCompiler.compileGLSLToSPIRV(
+        simple_vert_glsl, "main", chameleonrt::ShaderStage::Vertex);
+    
+    if (!vert_result) {
+        std::string error = slangCompiler.getLastError();
+        std::cerr << "[Slang Vulkan] Vertex shader compilation FAILED: " << error << std::endl;
+        throw std::runtime_error("Basic GLSL vertex shader compilation failed");
+    }
+    
+    std::cout << "[Slang Vulkan] Vertex shader compiled! SPIRV size: " 
+              << vert_result->bytecode.size() << " bytes" << std::endl;
+    
+    // Test 3: Validate SPIRV is acceptable to Vulkan
+    VkShaderModuleCreateInfo frag_create_info = {};
+    frag_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    frag_create_info.codeSize = frag_result->bytecode.size();
+    frag_create_info.pCode = reinterpret_cast<const uint32_t*>(frag_result->bytecode.data());
+    
+    VkShaderModule test_frag_module = VK_NULL_HANDLE;
+    VkResult frag_vk_result = vkCreateShaderModule(
+        device->logical_device(), &frag_create_info, nullptr, &test_frag_module);
+    
+    if (frag_vk_result != VK_SUCCESS) {
+        std::cerr << "[Slang Vulkan] ERROR: Fragment SPIRV rejected by Vulkan: " 
+                  << frag_vk_result << std::endl;
+        throw std::runtime_error("Generated SPIRV invalid");
+    }
+    
+    std::cout << "[Slang Vulkan] Fragment SPIRV validated by Vulkan" << std::endl;
+    vkDestroyShaderModule(device->logical_device(), test_frag_module, nullptr);
+    
+    VkShaderModuleCreateInfo vert_create_info = {};
+    vert_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vert_create_info.codeSize = vert_result->bytecode.size();
+    vert_create_info.pCode = reinterpret_cast<const uint32_t*>(vert_result->bytecode.data());
+    
+    VkShaderModule test_vert_module = VK_NULL_HANDLE;
+    VkResult vert_vk_result = vkCreateShaderModule(
+        device->logical_device(), &vert_create_info, nullptr, &test_vert_module);
+    
+    if (vert_vk_result != VK_SUCCESS) {
+        std::cerr << "[Slang Vulkan] ERROR: Vertex SPIRV rejected by Vulkan: " 
+                  << vert_vk_result << std::endl;
+        throw std::runtime_error("Generated SPIRV invalid");
+    }
+    
+    std::cout << "[Slang Vulkan] Vertex SPIRV validated by Vulkan" << std::endl;
+    vkDestroyShaderModule(device->logical_device(), test_vert_module, nullptr);
+    
+    std::cout << "\n[Slang Vulkan] SUCCESS! Basic GLSL->SPIRV compilation works!" << std::endl;
+    std::cout << "[Slang Vulkan] Prompt 2 COMPLETE - proceeding with embedded shaders\n" << std::endl;
+    // ======================================================================
+#endif
 
     // Load the shader modules for our pipeline and build the pipeline
     auto raygen_shader =

@@ -1,7 +1,8 @@
 cmake_dependent_option(ENABLE_VULKAN "Build the Vulkan rendering backend. Requires Vulkan" OFF
     "NOT APPLE" OFF)
 
-if (NOT ENABLE_VULKAN)
+# Build if either regular Vulkan or Vulkan with Slang is enabled
+if (NOT ENABLE_VULKAN AND NOT ENABLE_VULKAN_SLANG)
     return()
 endif()
 
@@ -31,7 +32,7 @@ add_library(crt_vulkan MODULE
     imgui_impl_vulkan.cpp)
 
 set_target_properties(crt_vulkan PROPERTIES
-	CXX_STANDARD 14
+	CXX_STANDARD 17
 	CXX_STANDARD_REQUIRED ON)
 
 if (REPORT_RAY_STATS)
@@ -47,6 +48,16 @@ target_link_libraries(crt_vulkan PUBLIC
     util
     display
     Vulkan::Vulkan)
+
+# Add Slang support if enabled
+if(ENABLE_VULKAN_SLANG)
+    target_link_libraries(crt_vulkan PRIVATE slang_compiler_util)
+    target_compile_definitions(crt_vulkan PRIVATE USE_SLANG_COMPILER=1)
+    
+    # Note: Vulkan uses SPIRV, doesn't need DXC DLLs like D3D12
+    # Keep existing glslang/shaderc finding for fallback
+    message(STATUS "Vulkan backend: Slang runtime shader compilation enabled")
+endif()
 
 install(TARGETS crt_vulkan
     LIBRARY DESTINATION bin)

@@ -6,8 +6,12 @@
 namespace chameleonrt {
 
 SlangShaderCompiler::SlangShaderCompiler() {
-    // Create global session
-    SlangResult result = slang::createGlobalSession(globalSession.writeRef());
+    // Create global session with GLSL support enabled
+    SlangGlobalSessionDesc sessionDesc = {};
+    sessionDesc.structureSize = sizeof(SlangGlobalSessionDesc);
+    sessionDesc.enableGLSL = true;  // Enable GLSL compatibility mode
+    
+    SlangResult result = slang::createGlobalSession(&sessionDesc, globalSession.writeRef());
     if (SLANG_FAILED(result)) {
         lastError = "Failed to create Slang global session";
         std::cerr << "ERROR: " << lastError << std::endl;
@@ -361,14 +365,52 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileInternal(
     }
     
     // Find entry point
+    // For GLSL, use findAndCheckEntryPoint which allows specifying the stage
+    // since GLSL doesn't have [shader("...")] attributes
     Slang::ComPtr<slang::IEntryPoint> entryPointObj;
-    SlangResult findResult = module->findEntryPointByName(
-        entryPoint.c_str(), 
-        entryPointObj.writeRef()
-    );
+    SlangResult findResult;
+    
+    if (sourceLanguage == SLANG_SOURCE_LANGUAGE_GLSL) {
+        // Convert our ShaderStage to SlangStage
+        SlangStage slangStage;
+        switch (stage) {
+            case ShaderStage::Vertex: slangStage = SLANG_STAGE_VERTEX; break;
+            case ShaderStage::Fragment: slangStage = SLANG_STAGE_FRAGMENT; break;
+            case ShaderStage::Compute: slangStage = SLANG_STAGE_COMPUTE; break;
+            case ShaderStage::RayGen: slangStage = SLANG_STAGE_RAY_GENERATION; break;
+            case ShaderStage::Miss: slangStage = SLANG_STAGE_MISS; break;
+            case ShaderStage::ClosestHit: slangStage = SLANG_STAGE_CLOSEST_HIT; break;
+            case ShaderStage::AnyHit: slangStage = SLANG_STAGE_ANY_HIT; break;
+            case ShaderStage::Intersection: slangStage = SLANG_STAGE_INTERSECTION; break;
+            case ShaderStage::Callable: slangStage = SLANG_STAGE_CALLABLE; break;
+            default: slangStage = SLANG_STAGE_NONE; break;
+        }
+        
+        findResult = module->findAndCheckEntryPoint(
+            entryPoint.c_str(),
+            slangStage,
+            entryPointObj.writeRef(),
+            diagnostics.writeRef()
+        );
+    } else {
+        // For HLSL/Slang, use findEntryPointByName (requires [shader("...")] attribute)
+        findResult = module->findEntryPointByName(
+            entryPoint.c_str(), 
+            entryPointObj.writeRef()
+        );
+    }
     
     if (SLANG_FAILED(findResult)) {
-        lastError = "Failed to find entry point: " + entryPoint;
+        if (diagnostics) {
+            const char* diagText = (const char*)diagnostics->getBufferPointer();
+            if (diagText && strlen(diagText) > 0) {
+                lastError = std::string("Entry point error:\n") + diagText;
+            } else {
+                lastError = "Failed to find entry point: " + entryPoint;
+            }
+        } else {
+            lastError = "Failed to find entry point: " + entryPoint;
+        }
         return std::nullopt;
     }
     

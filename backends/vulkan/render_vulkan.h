@@ -8,6 +8,10 @@
 #include "vulkan_utils.h"
 #include "vulkanrt_utils.h"
 
+#ifdef USE_SLANG_COMPILER
+#include "slang_shader_compiler.h"
+#endif
+
 struct HitGroupParams {
     uint64_t vert_buf = 0;
     uint64_t idx_buf = 0;
@@ -64,6 +68,10 @@ struct RenderVulkan : RenderBackend {
 
     size_t frame_id = 0;
     bool native_display = false;
+
+#ifdef USE_SLANG_COMPILER
+    chameleonrt::SlangShaderCompiler slangCompiler;
+#endif
 
     RenderVulkan(std::shared_ptr<vkrt::Device> device);
 
