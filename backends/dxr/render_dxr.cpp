@@ -778,7 +778,7 @@ void RenderDXR::build_shader_resource_heap()
 #endif
                            .add_srv_range(3, 0, 0)
                            .add_cbv_range(1, 0, 0)
-                           .add_srv_range(!textures.empty() ? textures.size() : 1, 3, 0)
+                           .add_srv_range(!textures.empty() ? textures.size() : 1, 30, 0)
                            .create(device.Get());
 
     raygen_sampler_heap =

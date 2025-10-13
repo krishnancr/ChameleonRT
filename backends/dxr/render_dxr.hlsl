@@ -54,7 +54,8 @@ StructuredBuffer<MaterialParams> material_params : register(t1);
 
 StructuredBuffer<QuadLight> lights : register(t2);
 
-Texture2D textures[] : register(t3);
+// Unbounded texture array - moved to t30 to avoid conflict with global buffers at t10-t14
+Texture2D textures[] : register(t30, space0);
 SamplerState tex_sampler : register(s0);
 
 float textured_scalar_param(const float x, in const float2 uv) {
@@ -277,7 +278,40 @@ void ShadowMiss(inout OcclusionHitInfo occlusion : SV_RayPayload) {
     occlusion.hit = 0;
 }
 
-// Per-mesh parameters for the closest hit
+// ============================================================================
+// PHASE 1: Global Buffer Declarations (NEW - Parallel Implementation)
+// ============================================================================
+// These buffers will eventually replace the space1 per-geometry buffers below.
+// For now, they exist alongside the old path for incremental validation.
+// IMPORTANT: Data layout EXACTLY matches space1 buffers (separate arrays for vertices/normals/uvs)
+
+// MeshDesc structure for per-mesh metadata
+struct MeshDesc {
+    uint32_t vbOffset;      // Offset into globalVertices
+    uint32_t ibOffset;      // Offset into globalIndices  
+    uint32_t normalOffset;  // Offset into globalNormals
+    uint32_t uvOffset;      // Offset into globalUVs
+    uint32_t num_normals;   // Number of normals for this mesh
+    uint32_t num_uvs;       // Number of UVs for this mesh
+    uint32_t material_id;   // Material ID for this mesh
+    uint32_t pad;           // Padding to 32 bytes
+};
+
+// Global buffers (space0, registers t10-t14)
+// NOTE: Moved unbounded texture array from t3 to t30 to free up t10-t14 for global buffers
+// NOTE: Declared but NOT BOUND yet (Phase 2 will create them, Phase 3 will bind them)
+// Data layout matches OLD space1 per-geometry buffers: separate arrays for vertices, indices, normals, UVs
+StructuredBuffer<float3> globalVertices : register(t10, space0);
+StructuredBuffer<uint3> globalIndices : register(t11, space0);
+StructuredBuffer<float3> globalNormals : register(t12, space0);
+StructuredBuffer<float2> globalUVs : register(t13, space0);
+StructuredBuffer<MeshDesc> meshDescs : register(t14, space0);
+
+// ============================================================================
+// OLD PATH: Per-mesh parameters for the closest hit (space1)
+// ============================================================================
+// These will be removed in Phase 5 after global buffers are validated.
+
 StructuredBuffer<float3> vertices : register(t0, space1);
 StructuredBuffer<uint3> indices : register(t1, space1);
 StructuredBuffer<float3> normals : register(t2, space1);
@@ -324,5 +358,57 @@ void ClosestHit(inout HitInfo payload, Attributes attrib) {
     payload.color_dist = float4(uv, 0, RayTCurrent());
     float3x3 inv_transp = float3x3(WorldToObject4x3()[0], WorldToObject4x3()[1], WorldToObject4x3()[2]);
     payload.normal = float4(normalize(mul(inv_transp, n)), material_id);
+}
+
+// ============================================================================
+// PHASE 1: New ClosestHit Using Global Buffers (Parallel Implementation)
+// ============================================================================
+// This shader uses the global buffers (t10-t14, space0) instead of space1.
+// It's IDENTICAL to ClosestHit() above, just with offset-based indexing.
+// Currently NOT used by the pipeline - will be switched in Phase 4.
+
+[shader("closesthit")] 
+void ClosestHit_GlobalBuffers(inout HitInfo payload, Attributes attrib) {
+    // Get the mesh ID from InstanceID (assumes one mesh per BLAS instance)
+    const uint32_t meshID = InstanceID();
+    
+    // Load mesh descriptor
+    MeshDesc mesh = meshDescs[NonUniformResourceIndex(meshID)];
+    
+    // Load indices from global buffer (with offset)
+    uint3 idx = globalIndices[NonUniformResourceIndex(mesh.ibOffset + PrimitiveIndex())];
+
+    // Load vertices from global buffer (with offset)
+    float3 va = globalVertices[NonUniformResourceIndex(mesh.vbOffset + idx.x)];
+    float3 vb = globalVertices[NonUniformResourceIndex(mesh.vbOffset + idx.y)];
+    float3 vc = globalVertices[NonUniformResourceIndex(mesh.vbOffset + idx.z)];
+    float3 ng = normalize(cross(vb - va, vc - va));
+
+    float3 n = ng;
+    // TODO per-vertex normals seems to give some pretty bad silhouetting,
+    // even on some models which do seem well tesselated?
+    // Implement shadow/bump terminator fix?
+#if 0
+    if (mesh.num_normals > 0) {
+        float3 na = globalNormals[NonUniformResourceIndex(mesh.normalOffset + idx.x)];
+        float3 nb = globalNormals[NonUniformResourceIndex(mesh.normalOffset + idx.y)];
+        float3 nc = globalNormals[NonUniformResourceIndex(mesh.normalOffset + idx.z)];
+        n = normalize((1.f - attrib.bary.x - attrib.bary.y) * na
+                + attrib.bary.x * nb + attrib.bary.y * nc);
+    }
+#endif
+
+    float2 uv = float2(0, 0);
+    if (mesh.num_uvs > 0) {
+        float2 uva = globalUVs[NonUniformResourceIndex(mesh.uvOffset + idx.x)];
+        float2 uvb = globalUVs[NonUniformResourceIndex(mesh.uvOffset + idx.y)];
+        float2 uvc = globalUVs[NonUniformResourceIndex(mesh.uvOffset + idx.z)];
+        uv = (1.f - attrib.bary.x - attrib.bary.y) * uva
+            + attrib.bary.x * uvb + attrib.bary.y * uvc;
+    }
+
+    payload.color_dist = float4(uv, 0, RayTCurrent());
+    float3x3 inv_transp = float3x3(WorldToObject4x3()[0], WorldToObject4x3()[1], WorldToObject4x3()[2]);
+    payload.normal = float4(normalize(mul(inv_transp, n)), mesh.material_id);
 }
 

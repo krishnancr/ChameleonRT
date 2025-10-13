@@ -47,29 +47,23 @@ struct Instance {
 };
 
 // Phase 2A.1: Global buffer structures
-
-// Unified vertex structure (combines position, normal, texCoord)
-struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
-    glm::vec2 texCoord;
-    
-    Vertex() = default;
-    Vertex(const glm::vec3& pos, const glm::vec3& norm, const glm::vec2& uv)
-        : position(pos), normal(norm), texCoord(uv) {}
-};
-
-// Mesh descriptor (offset into global buffers)
+// PHASE 1: Mesh descriptor matching shader structure EXACTLY
+// Must match render_dxr.hlsl MeshDesc (32 bytes)
 struct MeshDesc {
-    uint32_t vbOffset;      // Offset into global vertex buffer
-    uint32_t ibOffset;      // Offset into global index buffer
-    uint32_t vertexCount;   // Number of vertices
-    uint32_t indexCount;    // Number of indices (triangles * 3)
-    uint32_t materialID;    // Material index
+    uint32_t vbOffset;      // Offset into globalVertices (float3 array)
+    uint32_t ibOffset;      // Offset into globalIndices (uint3 array)
+    uint32_t normalOffset;  // Offset into globalNormals (float3 array)
+    uint32_t uvOffset;      // Offset into globalUVs (float2 array)
+    uint32_t num_normals;   // Number of normals for this mesh (0 if none)
+    uint32_t num_uvs;       // Number of UVs for this mesh (0 if none)
+    uint32_t material_id;   // Material ID for this mesh
+    uint32_t pad;           // Padding to 32 bytes
     
     MeshDesc() = default;
-    MeshDesc(uint32_t vb, uint32_t ib, uint32_t vc, uint32_t ic, uint32_t mat)
-        : vbOffset(vb), ibOffset(ib), vertexCount(vc), indexCount(ic), materialID(mat) {}
+    MeshDesc(uint32_t vb, uint32_t ib, uint32_t no, uint32_t uv, 
+             uint32_t nn, uint32_t nu, uint32_t mat)
+        : vbOffset(vb), ibOffset(ib), normalOffset(no), uvOffset(uv),
+          num_normals(nn), num_uvs(nu), material_id(mat), pad(0) {}
 };
 
 // Geometry instance data (for TLAS instances)

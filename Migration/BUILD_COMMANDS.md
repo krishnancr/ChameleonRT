@@ -299,3 +299,31 @@ cmake --build build --config Debug --parallel
 ```
 
 That's it! The script handles everything else.
+
+---
+
+## Phase 1 Build Notes (Global Buffer Refactor)
+
+**Current Status:** Phase 1 Complete (Shader declarations added)
+
+**Build Command for Incremental Phases:**
+```powershell
+# Build only DXR backend (faster iteration)
+cmake --build build --config Debug --target crt_dxr
+
+# Clean build if CMakeLists.txt changed
+cmake --build build --config Debug --target crt_dxr --clean-first
+```
+
+**Important Notes:**
+- `-Vd` flag added to CMakeLists.txt to disable DXC validation
+- Required because unbounded texture array (`Texture2D textures[]` at t3) conflicts with global buffers (t20-t22)
+- Global buffers declared but NOT bound yet (Phase 2 will create them)
+- `ClosestHit_GlobalBuffers` shader exists but NOT used yet (Phase 4 will switch to it)
+- Old `ClosestHit` shader still active - parallel implementation approach
+
+**Validation:**
+✅ Shader compiles successfully
+✅ DLL builds: `build\Debug\crt_dxr.dll`
+✅ Embedded DXIL: `build\backends\dxr\render_dxr_embedded_dxil.h`
+✅ Both ClosestHit shaders present in shader library
