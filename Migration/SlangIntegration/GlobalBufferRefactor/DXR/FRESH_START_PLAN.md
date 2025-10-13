@@ -366,29 +366,30 @@ void RenderDXR::set_scene(const Scene &scene)
 **Change:**
 
 ```cpp
-// BEFORE:
+// BEFORE (Note: textures now at t30+ after Phase 1 register change):
 raygen_desc_heap = dxr::DescriptorHeapBuilder()
     .add_uav_range(2, 0, 0)      // u0-u1 (output, accum_buffer)
     .add_srv_range(3, 0, 0)      // t0-t2 (TLAS, materials, lights)
     .add_cbv_range(1, 0, 0)      // b0 (ViewParams)
-    .add_srv_range(textures.size(), 3, 0)  // t3+ (textures array)
+    .add_srv_range(textures.size(), 30, 0)  // t30+ (textures array - moved in Phase 1)
     .create(device.Get());
 
-// AFTER:
+// AFTER (adding global buffers at t10-t14):
 raygen_desc_heap = dxr::DescriptorHeapBuilder()
     .add_uav_range(2, 0, 0)      // u0-u1 (output, accum_buffer)
     .add_srv_range(3, 0, 0)      // t0-t2 (TLAS, materials, lights)
     .add_cbv_range(1, 0, 0)      // b0 (ViewParams)
-    .add_srv_range(textures.size(), 3, 0)  // t3+ (textures array)
-    .add_srv_range(3, 10, 0)     // t10-t12 (NEW: global buffers)
+    .add_srv_range(textures.size(), 30, 0)  // t30+ (textures array)
+    .add_srv_range(5, 10, 0)     // t10-t14 (NEW: global buffers)
     .create(device.Get());
 ```
 
 **Critical Notes:**
-- The descriptor heap layout is now: `[u0-u1][t0-t2][b0][t3...tN][t10-t12]`
-- **RayGen shader unchanged** - still uses u0-u1, t0-t2, b0, t3+
-- New slots (t10-t12) exist but aren't populated yet
-- Total heap size increased by 3 descriptors
+- **Phase 1 Change:** Textures moved from t3 to t30 to free up t10-t14 for global buffers
+- The descriptor heap layout is now: `[u0-u1][t0-t2][b0][t30...tN][t10-t14]`
+- **RayGen shader unchanged** - still uses u0-u1, t0-t2, b0, t30+
+- New slots (t10-t14) exist but aren't populated yet
+- Total heap size increased by 5 descriptors (for 5 global buffers)
 
 **Validation:**
 - Build succeeds ✅
@@ -407,9 +408,9 @@ std::cout << "[DEBUG] Descriptor heap layout:\n";
 std::cout << "  UAVs: 2 (u0-u1)\n";
 std::cout << "  SRVs (scene): 3 (t0-t2)\n";
 std::cout << "  CBVs: 1 (b0)\n";
-std::cout << "  SRVs (textures): " << textures.size() << " (t3+)\n";
-std::cout << "  SRVs (global): 3 (t10-t12)\n";
-std::cout << "  Total descriptors: " << (2 + 3 + 1 + textures.size() + 3) << "\n";
+std::cout << "  SRVs (textures): " << textures.size() << " (t30+)\n";
+std::cout << "  SRVs (global): 5 (t10-t14)\n";
+std::cout << "  Total descriptors: " << (2 + 3 + 1 + textures.size() + 5) << "\n";
 ```
 
 ---
@@ -425,12 +426,13 @@ std::cout << "  Total descriptors: " << (2 + 3 + 1 + textures.size() + 3) << "\n
 **Add this code:**
 
 ```cpp
-// : Create SRVs for global buffers
-std::cout << "[] Creating SRVs for global buffers...\n";
+// Phase 3 : Create SRVs for global buffers
+std::cout << "[Phase 3] Creating SRVs for global buffers...\n";
 
 // Calculate descriptor offset to t10 position
-// Layout: [u0-u1][t0-t2][b0][t3...tN][t10-t12]
+// Layout: [u0-u1][t0-t2][b0][t30...tN][t10-t14]
 //         [  2  ][ 3  ][1][textures.size()][HERE]
+// Note: Textures moved to t30+ in Phase 1 to free up t10-t14
 const UINT descriptor_increment = device->GetDescriptorHandleIncrementSize(
     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
@@ -449,7 +451,7 @@ vertex_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
 vertex_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 vertex_srv_desc.Buffer.FirstElement = 0;
 vertex_srv_desc.Buffer.NumElements = static_cast<UINT>(scene.global_vertices.size());
-vertex_srv_desc.Buffer.StructureByteStride = sizeof(Vertex);  // Should be 32 bytes
+vertex_srv_desc.Buffer.StructureByteStride = sizeof(glm::vec3);  // 12 bytes
 vertex_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
 device->CreateShaderResourceView(
@@ -471,7 +473,7 @@ index_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
 index_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 index_srv_desc.Buffer.FirstElement = 0;
 index_srv_desc.Buffer.NumElements = static_cast<UINT>(scene.global_indices.size());
-index_srv_desc.Buffer.StructureByteStride = sizeof(uint32_t);  // 4 bytes
+index_srv_desc.Buffer.StructureByteStride = sizeof(glm::uvec3);  // 12 bytes
 index_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
 device->CreateShaderResourceView(
@@ -483,9 +485,57 @@ device->CreateShaderResourceView(
 std::cout << "    NumElements: " << index_srv_desc.Buffer.NumElements 
           << ", StructureByteStride: " << index_srv_desc.Buffer.StructureByteStride << "\n";
 
-// ===== t12: meshDescs SRV =====
+// ===== t12: globalNormals SRV (if present) =====
+if (!scene.global_normals.empty()) {
+    global_srv_handle.ptr += descriptor_increment;
+    std::cout << "  Creating globalNormals SRV at t12 (offset " << (offset_to_t10 + 2) << ")...\n";
+    
+    D3D12_SHADER_RESOURCE_VIEW_DESC normal_srv_desc = {};
+    normal_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+    normal_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    normal_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    normal_srv_desc.Buffer.FirstElement = 0;
+    normal_srv_desc.Buffer.NumElements = static_cast<UINT>(scene.global_normals.size());
+    normal_srv_desc.Buffer.StructureByteStride = sizeof(glm::vec3);  // 12 bytes
+    normal_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    
+    device->CreateShaderResourceView(
+        global_normal_buffer.get(),
+        &normal_srv_desc,
+        global_srv_handle
+    );
+    
+    std::cout << "    NumElements: " << normal_srv_desc.Buffer.NumElements 
+              << ", StructureByteStride: " << normal_srv_desc.Buffer.StructureByteStride << "\n";
+}
+
+// ===== t13: globalUVs SRV (if present) =====
+if (!scene.global_uvs.empty()) {
+    global_srv_handle.ptr += descriptor_increment;
+    std::cout << "  Creating globalUVs SRV at t13 (offset " << (offset_to_t10 + 3) << ")...\n";
+    
+    D3D12_SHADER_RESOURCE_VIEW_DESC uv_srv_desc = {};
+    uv_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+    uv_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    uv_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    uv_srv_desc.Buffer.FirstElement = 0;
+    uv_srv_desc.Buffer.NumElements = static_cast<UINT>(scene.global_uvs.size());
+    uv_srv_desc.Buffer.StructureByteStride = sizeof(glm::vec2);  // 8 bytes
+    uv_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    
+    device->CreateShaderResourceView(
+        global_uv_buffer.get(),
+        &uv_srv_desc,
+        global_srv_handle
+    );
+    
+    std::cout << "    NumElements: " << uv_srv_desc.Buffer.NumElements 
+              << ", StructureByteStride: " << uv_srv_desc.Buffer.StructureByteStride << "\n";
+}
+
+// ===== t14: meshDescs SRV =====
 global_srv_handle.ptr += descriptor_increment;
-std::cout << "  Creating meshDescs SRV at t12 (offset " << (offset_to_t10 + 2) << ")...\n";
+std::cout << "  Creating meshDescs SRV at t14 (offset " << (offset_to_t10 + 4) << ")...\n";
 
 D3D12_SHADER_RESOURCE_VIEW_DESC mesh_srv_desc = {};
 mesh_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
@@ -493,7 +543,7 @@ mesh_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
 mesh_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 mesh_srv_desc.Buffer.FirstElement = 0;
 mesh_srv_desc.Buffer.NumElements = static_cast<UINT>(scene.mesh_descriptors.size());
-mesh_srv_desc.Buffer.StructureByteStride = sizeof(MeshDesc);  // Should be 20 bytes
+mesh_srv_desc.Buffer.StructureByteStride = sizeof(MeshDesc);  // 32 bytes (from Phase 1)
 mesh_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
 device->CreateShaderResourceView(
@@ -505,27 +555,32 @@ device->CreateShaderResourceView(
 std::cout << "    NumElements: " << mesh_srv_desc.Buffer.NumElements 
           << ", StructureByteStride: " << mesh_srv_desc.Buffer.StructureByteStride << "\n";
 
-std::cout << "[] SRVs created successfully at t10-t12\n";
+std::cout << "[Phase 3] SRVs created successfully at t10-t14\n";
 ```
 
-**Expected Console Output (for test_cube.obj):**
+**Expected Console Output (for test_cube_complete.obj with normals/UVs):**
 ```
-[] Creating SRVs for global buffers...
+[Phase 3] Creating SRVs for global buffers...
   Creating globalVertices SRV at t10 (offset 6)...
-    NumElements: 24, StructureByteStride: 32
+    NumElements: 24, StructureByteStride: 12
   Creating globalIndices SRV at t11 (offset 7)...
-    NumElements: 36, StructureByteStride: 4
-  Creating meshDescs SRV at t12 (offset 8)...
-    NumElements: 1, StructureByteStride: 20
-[] SRVs created successfully at t10-t12
+    NumElements: 12, StructureByteStride: 12
+  Creating globalNormals SRV at t12 (offset 8)...
+    NumElements: 24, StructureByteStride: 12
+  Creating globalUVs SRV at t13 (offset 9)...
+    NumElements: 24, StructureByteStride: 8
+  Creating meshDescs SRV at t14 (offset 10)...
+    NumElements: 1, StructureByteStride: 32
+[Phase 3] SRVs created successfully at t10-t14
 ```
+
+**Note:** For simple test_cube.obj (no normals/UVs), only t10, t11, and t14 will be created.
 
 **Validation:**
 - Build succeeds ✅
 - **Proof:** Build log shows no errors
 - SRVs created without errors ✅
-- **Proof:** Console shows 3 "Creating ... SRV" messages with correct counts
-- Application runs ✅
+- **Proof:** Console shows "Creating ... SRV" messages with correct counts
 - **Proof:** Application still renders correctly (old ClosestHit used)
 - Buffer addresses are valid ✅
 - **Proof:** D3D12 debug layer doesn't report invalid resource

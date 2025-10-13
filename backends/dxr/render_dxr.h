@@ -30,6 +30,13 @@ struct RenderDXR : RenderBackend {
     dxr::Buffer global_normal_buffer;
     dxr::Buffer global_uv_buffer;
     dxr::Buffer mesh_desc_buffer;
+    
+    // Phase 3.2: Track buffer sizes for SRV creation
+    size_t global_vertex_count = 0;
+    size_t global_index_count = 0;
+    size_t global_normal_count = 0;
+    size_t global_uv_count = 0;
+    size_t mesh_desc_count = 0;
 
     dxr::Texture2D render_target, accum_buffer, ray_stats;
     std::vector<dxr::Texture2D> textures;
