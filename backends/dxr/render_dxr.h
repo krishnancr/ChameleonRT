@@ -24,6 +24,13 @@ struct RenderDXR : RenderBackend {
     dxr::Buffer view_param_buf, img_readback_buf, instance_buf, material_param_buf, light_buf,
         ray_stats_readback_buf;
 
+    // Phase 2: Global buffers (for shader access)
+    dxr::Buffer global_vertex_buffer;
+    dxr::Buffer global_index_buffer;
+    dxr::Buffer global_normal_buffer;
+    dxr::Buffer global_uv_buffer;
+    dxr::Buffer mesh_desc_buffer;
+
     dxr::Texture2D render_target, accum_buffer, ray_stats;
     std::vector<dxr::Texture2D> textures;
 

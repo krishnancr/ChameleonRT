@@ -233,7 +233,6 @@ class RenderDXR {
 - Compiles ✅
 - Application runs (buffers not used yet) ✅
 
-**Rollback:** `git tag phase2a2-step2.1-buffer-members`
 
 ---
 

@@ -412,6 +412,192 @@ void RenderDXR::set_scene(const Scene &scene)
         sync_gpu();
     }
 
+    // ============================================================================
+    // Phase 2: Create Global Buffers (for shader access)
+    // ============================================================================
+    // NOTE: Still creating per-geometry buffers for BLAS above (unchanged)
+    std::cout << "[Phase 2] Creating global buffers...\n";
+
+    // 1. Global Vertex Buffer (positions)
+    if (!scene.global_vertices.empty()) {
+        dxr::Buffer upload_global_verts = dxr::Buffer::upload(
+            device.Get(),
+            scene.global_vertices.size() * sizeof(glm::vec3),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_global_verts.map(), 
+                    scene.global_vertices.data(), 
+                    upload_global_verts.size());
+        upload_global_verts.unmap();
+        
+        global_vertex_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_global_verts.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(global_vertex_buffer.get(), upload_global_verts.get());
+        auto b = barrier_transition(global_vertex_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    // 2. Global Index Buffer (uvec3 triangles)
+    if (!scene.global_indices.empty()) {
+        dxr::Buffer upload_global_indices = dxr::Buffer::upload(
+            device.Get(),
+            scene.global_indices.size() * sizeof(glm::uvec3),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_global_indices.map(), 
+                    scene.global_indices.data(), 
+                    upload_global_indices.size());
+        upload_global_indices.unmap();
+        
+        global_index_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_global_indices.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(global_index_buffer.get(), upload_global_indices.get());
+        auto b = barrier_transition(global_index_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    // 3. Global Normal Buffer (may be empty)
+    if (!scene.global_normals.empty()) {
+        dxr::Buffer upload_global_normals = dxr::Buffer::upload(
+            device.Get(),
+            scene.global_normals.size() * sizeof(glm::vec3),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_global_normals.map(), 
+                    scene.global_normals.data(), 
+                    upload_global_normals.size());
+        upload_global_normals.unmap();
+        
+        global_normal_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_global_normals.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(global_normal_buffer.get(), upload_global_normals.get());
+        auto b = barrier_transition(global_normal_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    // 4. Global UV Buffer (may be empty)
+    if (!scene.global_uvs.empty()) {
+        dxr::Buffer upload_global_uvs = dxr::Buffer::upload(
+            device.Get(),
+            scene.global_uvs.size() * sizeof(glm::vec2),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_global_uvs.map(), 
+                    scene.global_uvs.data(), 
+                    upload_global_uvs.size());
+        upload_global_uvs.unmap();
+        
+        global_uv_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_global_uvs.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(global_uv_buffer.get(), upload_global_uvs.get());
+        auto b = barrier_transition(global_uv_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    // 5. MeshDesc Buffer
+    if (!scene.mesh_descriptors.empty()) {
+        dxr::Buffer upload_mesh_descs = dxr::Buffer::upload(
+            device.Get(),
+            scene.mesh_descriptors.size() * sizeof(MeshDesc),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_mesh_descs.map(), 
+                    scene.mesh_descriptors.data(), 
+                    upload_mesh_descs.size());
+        upload_mesh_descs.unmap();
+        
+        mesh_desc_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_mesh_descs.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(mesh_desc_buffer.get(), upload_mesh_descs.get());
+        auto b = barrier_transition(mesh_desc_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    std::cout << "[Phase 2] Global buffers created successfully:\n";
+    std::cout << "  - Vertices (vec3):  " << scene.global_vertices.size() 
+              << " (" << (scene.global_vertices.size() * sizeof(glm::vec3)) << " bytes)\n";
+    std::cout << "  - Indices (uvec3):  " << scene.global_indices.size() 
+              << " (" << (scene.global_indices.size() * sizeof(glm::uvec3)) << " bytes)\n";
+    std::cout << "  - Normals (vec3):   " << scene.global_normals.size() 
+              << " (" << (scene.global_normals.size() * sizeof(glm::vec3)) << " bytes)\n";
+    std::cout << "  - UVs (vec2):       " << scene.global_uvs.size() 
+              << " (" << (scene.global_uvs.size() * sizeof(glm::vec2)) << " bytes)\n";
+    std::cout << "  - MeshDescs:        " << scene.mesh_descriptors.size() 
+              << " (" << (scene.mesh_descriptors.size() * sizeof(MeshDesc)) << " bytes)\n";
+
+    // Phase 2 Verification: Check GPU addresses and resource states
+    std::cout << "[Phase 2] GPU Upload Verification:\n";
+    if (!scene.global_vertices.empty()) {
+        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = global_vertex_buffer->GetGPUVirtualAddress();
+        std::cout << "  - globalVertices GPU address: 0x" << std::hex << gpu_va << std::dec;
+        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
+    }
+    if (!scene.global_indices.empty()) {
+        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = global_index_buffer->GetGPUVirtualAddress();
+        std::cout << "  - globalIndices GPU address:  0x" << std::hex << gpu_va << std::dec;
+        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
+    }
+    if (!scene.global_normals.empty()) {
+        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = global_normal_buffer->GetGPUVirtualAddress();
+        std::cout << "  - globalNormals GPU address:  0x" << std::hex << gpu_va << std::dec;
+        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
+    }
+    if (!scene.global_uvs.empty()) {
+        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = global_uv_buffer->GetGPUVirtualAddress();
+        std::cout << "  - globalUVs GPU address:      0x" << std::hex << gpu_va << std::dec;
+        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
+    }
+    if (!scene.mesh_descriptors.empty()) {
+        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = mesh_desc_buffer->GetGPUVirtualAddress();
+        std::cout << "  - meshDescs GPU address:      0x" << std::hex << gpu_va << std::dec;
+        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
+    }
+
     build_shader_resource_heap();
     build_raytracing_pipeline();
     build_shader_binding_table();
