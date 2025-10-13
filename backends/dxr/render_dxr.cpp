@@ -890,19 +890,22 @@ void RenderDXR::build_raytracing_pipeline()
     shader_libraries.emplace_back(
         render_dxr_dxil,
         sizeof(render_dxr_dxil),
-        std::vector<std::wstring>{L"RayGen", L"Miss", L"ClosestHit", L"ShadowMiss"}
+        // Phase 4: Removed old ClosestHit from exports since all hit groups now use ClosestHit_GlobalBuffers
+        std::vector<std::wstring>{L"RayGen", L"Miss", L"ClosestHit_GlobalBuffers", L"ShadowMiss"}
     );
 #endif
 
+    // Phase 4: Move descriptor heaps to global root signature so ClosestHit_GlobalBuffers can access them
     dxr::RootSignature global_root_sig =
-        dxr::RootSignatureBuilder::global().create(device.Get());
+        dxr::RootSignatureBuilder::global()
+            .add_desc_heap("cbv_srv_uav_heap", raygen_desc_heap)
+            .add_desc_heap("sampler_heap", raygen_sampler_heap)
+            .create(device.Get());
 
-    // Create the root signature for our ray gen shader
+    // Create the root signature for our ray gen shader (now only has local constants)
     dxr::RootSignature raygen_root_sig =
         dxr::RootSignatureBuilder::local()
             .add_constants("SceneParams", 1, 1, 0)
-            .add_desc_heap("cbv_srv_uav_heap", raygen_desc_heap)
-            .add_desc_heap("sampler_heap", raygen_sampler_heap)
             .create(device.Get());
 
     // Create the root signature for our closest hit function
@@ -953,11 +956,16 @@ void RenderDXR::build_raytracing_pipeline()
                 L"HitGroup_param_mesh" + std::to_wstring(i) + L"_geom" + std::to_wstring(j);
             hg_names.push_back(hg_name);
 
+            // Phase 4: Switch to ClosestHit_GlobalBuffers shader
+            // Note: ClosestHit_GlobalBuffers uses global descriptor heap (space0),
+            // so it doesn't need a local root signature
             rt_pipeline_builder.add_hit_group(
-                {dxr::HitGroup(hg_name, D3D12_HIT_GROUP_TYPE_TRIANGLES, L"ClosestHit")});
+                {dxr::HitGroup(hg_name, D3D12_HIT_GROUP_TYPE_TRIANGLES, L"ClosestHit_GlobalBuffers")});
         }
     }
-    rt_pipeline_builder.set_shader_root_sig(hg_names, hitgroup_root_sig);
+    // Phase 4: Don't assign local root signature to new hit groups
+    // They use the global descriptor heap via the global root signature
+    // rt_pipeline_builder.set_shader_root_sig(hg_names, hitgroup_root_sig);
 
     rt_pipeline = rt_pipeline_builder.create(device.Get());
 }
@@ -994,6 +1002,7 @@ void RenderDXR::build_shader_resource_heap()
 
 void RenderDXR::build_shader_binding_table()
 {
+    std::cout << "[Phase 4] Building shader binding table...\n";
     rt_pipeline.map_shader_table();
     {
         uint8_t *map = rt_pipeline.shader_record(L"RayGen");
@@ -1002,24 +1011,18 @@ void RenderDXR::build_shader_binding_table()
         const uint32_t num_lights = light_buf.size() / sizeof(QuadLight);
         std::memcpy(map + sig->offset("SceneParams"), &num_lights, sizeof(uint32_t));
 
-        // Is writing the descriptor heap handle actually needed? It seems to not matter
-        // if this is written or not
-        D3D12_GPU_DESCRIPTOR_HANDLE desc_heap_handle =
-            raygen_desc_heap->GetGPUDescriptorHandleForHeapStart();
-        std::memcpy(map + sig->offset("cbv_srv_uav_heap"),
-                    &desc_heap_handle,
-                    sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-        desc_heap_handle = raygen_sampler_heap->GetGPUDescriptorHandleForHeapStart();
-        std::memcpy(map + sig->offset("sampler_heap"),
-                    &desc_heap_handle,
-                    sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
+        // Phase 4: Descriptor heaps moved to global root signature, no longer in local raygen_root_sig
     }
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id].geometries.size(); ++j) {
             const std::wstring hg_name =
                 L"HitGroup_param_mesh" + std::to_wstring(i) + L"_geom" + std::to_wstring(j);
+
+            // Phase 4: Skip shader record setup for ClosestHit_GlobalBuffers
+            // This shader uses only global resources (descriptor heap), no local root signature
+            // No parameters need to be written to the shader binding table
+            continue;
 
             auto &geom = meshes[pm.mesh_id].geometries[j];
 
@@ -1194,6 +1197,10 @@ void RenderDXR::build_descriptor_heap()
     
     const UINT descriptor_increment = device->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    
+    std::cout << "[Phase 3.2] Current heap_handle offset from start: " 
+              << (heap_handle.ptr - raygen_desc_heap.cpu_desc_handle().ptr) / descriptor_increment
+              << " descriptors\n";
 
     // ===== t10: globalVertices SRV =====
     if (global_vertex_count > 0) {
@@ -1342,6 +1349,14 @@ void RenderDXR::record_command_lists()
     render_cmd_list->SetDescriptorHeaps(desc_heaps.size(), desc_heaps.data());
     render_cmd_list->SetPipelineState1(rt_pipeline.get());
     render_cmd_list->SetComputeRootSignature(rt_pipeline.global_sig());
+    
+    // Phase 4: Bind descriptor heaps to global root signature
+    // Parameter 0: cbv_srv_uav_heap
+    // Parameter 1: sampler_heap
+    render_cmd_list->SetComputeRootDescriptorTable(
+        0, raygen_desc_heap->GetGPUDescriptorHandleForHeapStart());
+    render_cmd_list->SetComputeRootDescriptorTable(
+        1, raygen_sampler_heap->GetGPUDescriptorHandleForHeapStart());
 
     render_cmd_list->EndQuery(timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
 

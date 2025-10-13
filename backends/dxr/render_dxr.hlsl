@@ -385,9 +385,7 @@ void ClosestHit_GlobalBuffers(inout HitInfo payload, Attributes attrib) {
     float3 ng = normalize(cross(vb - va, vc - va));
 
     float3 n = ng;
-    // TODO per-vertex normals seems to give some pretty bad silhouetting,
-    // even on some models which do seem well tesselated?
-    // Implement shadow/bump terminator fix?
+    // Per-vertex normals (disabled for now to match original behavior)
 #if 0
     if (mesh.num_normals > 0) {
         float3 na = globalNormals[NonUniformResourceIndex(mesh.normalOffset + idx.x)];
