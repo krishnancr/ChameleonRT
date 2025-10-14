@@ -7,6 +7,7 @@
 #include <string>
 #include "spv_shaders_embedded_spv.h"
 #include "util.h"
+#include "mesh.h"  // PHASE 2: For MeshDesc structure
 #include <glm/ext.hpp>
 
 RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
@@ -75,7 +76,8 @@ RenderVulkan::~RenderVulkan()
     vkDestroyCommandPool(device->logical_device(), render_cmd_pool, nullptr);
     vkDestroyPipelineLayout(device->logical_device(), pipeline_layout, nullptr);
     vkDestroyDescriptorSetLayout(device->logical_device(), desc_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device->logical_device(), textures_desc_layout, nullptr);
+    // DESCRIPTOR FLATTENING: No longer using separate textures_desc_layout
+    // vkDestroyDescriptorSetLayout(device->logical_device(), textures_desc_layout, nullptr);
     vkDestroyDescriptorPool(device->logical_device(), desc_pool, nullptr);
     vkDestroyFence(device->logical_device(), fence, nullptr);
     vkDestroyPipeline(device->logical_device(), rt_pipeline.handle(), nullptr);
@@ -669,6 +671,88 @@ void RenderVulkan::set_scene(const Scene &scene)
                            VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
     }
 
+    // ============================================================================
+    // PHASE 2: Create Global Buffers (PARALLEL IMPLEMENTATION - matches DXR Phase 2)
+    // ============================================================================
+    std::cout << "\n[PHASE 2] Creating global buffers from scene data...\n";
+    
+    // 1. Global Vertex Buffer (positions)
+    if (!scene.global_vertices.empty()) {
+        global_vertex_count = scene.global_vertices.size();
+        
+        upload_global_buffer(
+            global_vertex_buffer,
+            scene.global_vertices.data(),
+            scene.global_vertices.size() * sizeof(glm::vec3),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+        
+        std::cout << "  globalVertices: " << global_vertex_count << " elements ("
+                  << (global_vertex_count * sizeof(glm::vec3)) << " bytes)\n";
+    }
+    
+    // 2. Global Index Buffer (uvec3 triangles)
+    if (!scene.global_indices.empty()) {
+        global_index_count = scene.global_indices.size();
+        
+        upload_global_buffer(
+            global_index_buffer,
+            scene.global_indices.data(),
+            scene.global_indices.size() * sizeof(glm::uvec3),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+        
+        std::cout << "  globalIndices: " << global_index_count << " triangles ("
+                  << (global_index_count * sizeof(glm::uvec3)) << " bytes)\n";
+    }
+    
+    // 3. Global Normal Buffer
+    if (!scene.global_normals.empty()) {
+        global_normal_count = scene.global_normals.size();
+        
+        upload_global_buffer(
+            global_normal_buffer,
+            scene.global_normals.data(),
+            scene.global_normals.size() * sizeof(glm::vec3),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+        
+        std::cout << " globalNormals: " << global_normal_count << " elements ("
+                  << (global_normal_count * sizeof(glm::vec3)) << " bytes)\n";
+    }
+    
+    // 4. Global UV Buffer
+    if (!scene.global_uvs.empty()) {
+        global_uv_count = scene.global_uvs.size();
+        
+        upload_global_buffer(
+            global_uv_buffer,
+            scene.global_uvs.data(),
+            scene.global_uvs.size() * sizeof(glm::vec2),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+        
+        std::cout << " globalUVs: " << global_uv_count << " elements ("
+                  << (global_uv_count * sizeof(glm::vec2)) << " bytes)\n";
+    }
+    
+    // 5. MeshDesc Buffer
+    if (!scene.mesh_descriptors.empty()) {
+        mesh_desc_count = scene.mesh_descriptors.size();
+        
+        upload_global_buffer(
+            mesh_desc_buffer,
+            scene.mesh_descriptors.data(),
+            scene.mesh_descriptors.size() * sizeof(MeshDesc),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+        
+        std::cout << "  meshDescs: " << mesh_desc_count << " descriptors ("
+                  << (mesh_desc_count * sizeof(MeshDesc)) << " bytes)\n";
+    }
+    
+    std::cout << "[PHASE 2] Global buffers created successfully\n\n";
+
     build_raytracing_pipeline();
     build_shader_descriptor_table();
     build_shader_binding_table();
@@ -777,6 +861,24 @@ void RenderVulkan::build_raytracing_pipeline()
             .add_binding(
                 6, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
 #endif
+            // PHASE 3: Add global buffer bindings (PARALLEL IMPLEMENTATION)
+            .add_binding(
+                10, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            .add_binding(
+                11, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            .add_binding(
+                12, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            .add_binding(
+                13, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            .add_binding(
+                14, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            // DESCRIPTOR FLATTENING: Move textures from Set 1 to Set 0, binding 30 (matches DXR t30+)
+            .add_binding(
+                30,
+                std::max(textures.size(), size_t(1)),
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+                VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)
             .build(*device);
 
     const size_t total_geom =
@@ -787,17 +889,9 @@ void RenderVulkan::build_raytracing_pipeline()
                             return n + t->geometries.size();
                         });
 
-    textures_desc_layout =
-        vkrt::DescriptorSetLayoutBuilder()
-            .add_binding(0,
-                         std::max(textures.size(), size_t(1)),
-                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                         VK_SHADER_STAGE_RAYGEN_BIT_KHR,
-                         VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)
-            .build(*device);
-
-    std::vector<VkDescriptorSetLayout> descriptor_layouts = {desc_layout,
-                                                             textures_desc_layout};
+    // DESCRIPTOR FLATTENING: Remove separate textures_desc_layout (Set 1)
+    // Textures are now in Set 0 at binding 30
+    std::vector<VkDescriptorSetLayout> descriptor_layouts = {desc_layout};
 
     VkPipelineLayoutCreateInfo pipeline_create_info = {};
     pipeline_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -932,30 +1026,24 @@ void main() {
 
 void RenderVulkan::build_shader_descriptor_table()
 {
+    // DESCRIPTOR FLATTENING: Combined pool for all Set 0 resources (including textures at binding 30)
     const std::vector<VkDescriptorPoolSize> pool_sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},  // 2 existing + 5 global buffers
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             std::max(uint32_t(textures.size()), uint32_t(1))}};
+                             std::max(uint32_t(textures.size()), uint32_t(1))}}; // Moved from Set 1
 
     VkDescriptorPoolCreateInfo pool_create_info = {};
     pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_create_info.maxSets = 6;
+    pool_create_info.maxSets = 1;  // Only Set 0 now (was 6)
     pool_create_info.poolSizeCount = pool_sizes.size();
     pool_create_info.pPoolSizes = pool_sizes.data();
     CHECK_VULKAN(vkCreateDescriptorPool(
         device->logical_device(), &pool_create_info, nullptr, &desc_pool));
 
-    VkDescriptorSetAllocateInfo alloc_info = {};
-    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool = desc_pool;
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts = &desc_layout;
-    CHECK_VULKAN(vkAllocateDescriptorSets(device->logical_device(), &alloc_info, &desc_set));
-
-    // Set up the size info for the variable size texture info binding
+    // Allocate Set 0 with variable descriptor count for textures at binding 30
     const uint32_t texture_set_size = textures.size();
     VkDescriptorSetVariableDescriptorCountAllocateInfo texture_set_size_info = {};
     texture_set_size_info.sType =
@@ -963,16 +1051,20 @@ void RenderVulkan::build_shader_descriptor_table()
     texture_set_size_info.descriptorSetCount = 1;
     texture_set_size_info.pDescriptorCounts = &texture_set_size;
 
-    alloc_info.pSetLayouts = &textures_desc_layout;
-    alloc_info.pNext = &texture_set_size_info;
-    CHECK_VULKAN(
-        vkAllocateDescriptorSets(device->logical_device(), &alloc_info, &textures_desc_set));
+    VkDescriptorSetAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.descriptorPool = desc_pool;
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.pSetLayouts = &desc_layout;
+    alloc_info.pNext = &texture_set_size_info;  // Variable count for binding 30
+    CHECK_VULKAN(vkAllocateDescriptorSets(device->logical_device(), &alloc_info, &desc_set));
 
     std::vector<vkrt::CombinedImageSampler> combined_samplers;
     for (const auto &t : textures) {
         combined_samplers.emplace_back(t, sampler);
     }
 
+    // Write descriptors to Set 0 (including textures at binding 30)
     auto updater = vkrt::DescriptorSetUpdater()
                        .write_acceleration_structure(desc_set, 0, scene_bvh)
                        .write_storage_image(desc_set, 1, render_target)
@@ -984,10 +1076,118 @@ void RenderVulkan::build_shader_descriptor_table()
     updater.write_storage_image(desc_set, 6, ray_stats);
 #endif
 
+    // DESCRIPTOR FLATTENING: Write textures to Set 0, binding 30 (was Set 1, binding 0)
     if (!combined_samplers.empty()) {
-        updater.write_combined_sampler_array(textures_desc_set, 0, combined_samplers);
+        updater.write_combined_sampler_array(desc_set, 30, combined_samplers);
     }
     updater.update(*device);
+
+    // ============================================================================
+    // PHASE 3: Write Global Buffer Descriptors (PARALLEL IMPLEMENTATION)
+    // ============================================================================
+    std::cout << "\n[PHASE 3] Writing global buffer descriptors...\n";
+    
+    // Global vertex buffer (binding 10)
+    if (global_vertex_buffer) {
+        VkDescriptorBufferInfo vertex_info = {};
+        vertex_info.buffer = global_vertex_buffer->handle();
+        vertex_info.offset = 0;
+        vertex_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet vertex_write = {};
+        vertex_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        vertex_write.dstSet = desc_set;
+        vertex_write.dstBinding = 10;
+        vertex_write.dstArrayElement = 0;
+        vertex_write.descriptorCount = 1;
+        vertex_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        vertex_write.pBufferInfo = &vertex_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &vertex_write, 0, nullptr);
+        std::cout << "  ✅ Binding 10 (globalVertices): " << global_vertex_count << " elements\n";
+    }
+    
+    // Global index buffer (binding 11)
+    if (global_index_buffer) {
+        VkDescriptorBufferInfo index_info = {};
+        index_info.buffer = global_index_buffer->handle();
+        index_info.offset = 0;
+        index_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet index_write = {};
+        index_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        index_write.dstSet = desc_set;
+        index_write.dstBinding = 11;
+        index_write.dstArrayElement = 0;
+        index_write.descriptorCount = 1;
+        index_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        index_write.pBufferInfo = &index_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &index_write, 0, nullptr);
+        std::cout << "  ✅ Binding 11 (globalIndices): " << global_index_count << " elements\n";
+    }
+    
+    // Global normal buffer (binding 12)
+    if (global_normal_buffer) {
+        VkDescriptorBufferInfo normal_info = {};
+        normal_info.buffer = global_normal_buffer->handle();
+        normal_info.offset = 0;
+        normal_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet normal_write = {};
+        normal_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        normal_write.dstSet = desc_set;
+        normal_write.dstBinding = 12;
+        normal_write.dstArrayElement = 0;
+        normal_write.descriptorCount = 1;
+        normal_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        normal_write.pBufferInfo = &normal_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &normal_write, 0, nullptr);
+        std::cout << "  ✅ Binding 12 (globalNormals): " << global_normal_count << " elements\n";
+    }
+    
+    // Global UV buffer (binding 13)
+    if (global_uv_buffer) {
+        VkDescriptorBufferInfo uv_info = {};
+        uv_info.buffer = global_uv_buffer->handle();
+        uv_info.offset = 0;
+        uv_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet uv_write = {};
+        uv_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        uv_write.dstSet = desc_set;
+        uv_write.dstBinding = 13;
+        uv_write.dstArrayElement = 0;
+        uv_write.descriptorCount = 1;
+        uv_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        uv_write.pBufferInfo = &uv_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &uv_write, 0, nullptr);
+        std::cout << "  ✅ Binding 13 (globalUVs): " << global_uv_count << " elements\n";
+    }
+    
+    // MeshDesc buffer (binding 14)
+    if (mesh_desc_buffer) {
+        VkDescriptorBufferInfo mesh_info = {};
+        mesh_info.buffer = mesh_desc_buffer->handle();
+        mesh_info.offset = 0;
+        mesh_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet mesh_write = {};
+        mesh_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        mesh_write.dstSet = desc_set;
+        mesh_write.dstBinding = 14;
+        mesh_write.dstArrayElement = 0;
+        mesh_write.descriptorCount = 1;
+        mesh_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        mesh_write.pBufferInfo = &mesh_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &mesh_write, 0, nullptr);
+        std::cout << "  ✅ Binding 14 (meshDescs): " << mesh_desc_count << " elements\n";
+    }
+    
+    std::cout << "[PHASE 3] Global buffer descriptors bound successfully\n\n";
 }
 
 void RenderVulkan::build_shader_binding_table()
@@ -1017,36 +1217,36 @@ void RenderVulkan::build_shader_binding_table()
         *params = light_params->size() / sizeof(QuadLight);
     }
 
+    // PHASE 4 COMPLETE: Write simplified SBT with only meshDescIndex
+    std::cout << "\n[PHASE 4] Writing SBT with meshDescIndex...\n";
+    
+    size_t mesh_desc_index = 0;
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id]->geometries.size(); ++j) {
-            auto &geom = meshes[pm.mesh_id]->geometries[j];
             const std::string hg_name =
                 "HitGroup_param_mesh" + std::to_string(i) + "_geom" + std::to_string(j);
 
             HitGroupParams *params =
                 reinterpret_cast<HitGroupParams *>(shader_table.sbt_params(hg_name));
 
-            params->vert_buf = meshes[pm.mesh_id]->geometries[j].vertex_buf->device_address();
-            params->idx_buf = meshes[pm.mesh_id]->geometries[j].index_buf->device_address();
-
-            if (meshes[pm.mesh_id]->geometries[j].normal_buf) {
-                params->normal_buf =
-                    meshes[pm.mesh_id]->geometries[j].normal_buf->device_address();
-                params->num_normals = 1;
-            } else {
-                params->num_normals = 0;
+            // Write only meshDescIndex - all geometry data accessed via global buffers
+            params->meshDescIndex = static_cast<uint32_t>(mesh_desc_index);
+            
+            // Debug output for first few geometries
+            if (mesh_desc_index < 5) {
+                std::cout << "  HitGroup[" << mesh_desc_index << "] "
+                          << "(param_mesh" << i << "_geom" << j << ") -> "
+                          << "meshDescIndex=" << params->meshDescIndex << "\n";
             }
-
-            if (meshes[pm.mesh_id]->geometries[j].uv_buf) {
-                params->uv_buf = meshes[pm.mesh_id]->geometries[j].uv_buf->device_address();
-                params->num_uvs = 1;
-            } else {
-                params->num_uvs = 0;
-            }
-            params->material_id = pm.material_ids[j];
+            
+            mesh_desc_index++;
         }
     }
+    
+    std::cout << "[PHASE 4] SBT complete: " << mesh_desc_index << " hit groups configured\n";
+    std::cout << "  📊 SBT size: " << sizeof(HitGroupParams) << " bytes per record "
+              << "(single uint32 meshDescIndex)\n\n";
 
     {
         VkCommandBufferBeginInfo begin_info = {};
@@ -1122,7 +1322,8 @@ void RenderVulkan::record_command_buffers()
     vkCmdBindPipeline(
         render_cmd_buf, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline.handle());
 
-    const std::vector<VkDescriptorSet> descriptor_sets = {desc_set, textures_desc_set};
+    // DESCRIPTOR FLATTENING: Only bind Set 0 (textures moved from Set 1 to binding 30)
+    const std::vector<VkDescriptorSet> descriptor_sets = {desc_set};
 
     vkCmdBindDescriptorSets(render_cmd_buf,
                             VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
@@ -1211,4 +1412,75 @@ void RenderVulkan::record_command_buffers()
 #endif
 
     CHECK_VULKAN(vkEndCommandBuffer(readback_cmd_buf));
+}
+
+// PHASE 2: Helper function for uploading global buffers (PARALLEL IMPLEMENTATION)
+void RenderVulkan::upload_global_buffer(std::shared_ptr<vkrt::Buffer>& gpu_buf,
+                                       const void* data,
+                                       size_t size,
+                                       VkBufferUsageFlags usage)
+{
+    // Create staging buffer
+    auto staging = vkrt::Buffer::host(
+        *device,
+        size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    // Copy data to staging
+    std::memcpy(staging->map(), data, size);
+    staging->unmap();
+    
+    // Create device buffer
+    gpu_buf = vkrt::Buffer::device(
+        *device,
+        size,
+        usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+    );
+    
+    // Copy staging to device via command buffer
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
+    
+    VkBufferCopy copy_region = {};
+    copy_region.size = size;
+    vkCmdCopyBuffer(command_buffer,
+                   staging->handle(),
+                   gpu_buf->handle(),
+                   1,
+                   &copy_region);
+    
+    // Barrier to make buffer shader-readable
+    VkBufferMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = gpu_buf->handle();
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                        0,
+                        0, nullptr,
+                        1, &barrier,
+                        0, nullptr);
+    
+    CHECK_VULKAN(vkEndCommandBuffer(command_buffer));
+    
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+    CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+    
+    vkResetCommandPool(device->logical_device(),
+                      command_pool,
+                      VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
 }

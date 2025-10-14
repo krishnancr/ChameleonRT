@@ -721,7 +721,7 @@ layout(shaderRecordEXT, std430) buffer SBT {
 };
 ```
 
-**REPLACE WITH (simplified SBT):**
+**APPEND WITH (simplified SBT):**
 ```glsl
 // PHASE 4: Simplified SBT record (matches Phase 5 expectation)
 layout(shaderRecordEXT, std430) buffer SBT {
@@ -729,7 +729,7 @@ layout(shaderRecordEXT, std430) buffer SBT {
 };
 ```
 
-**REPLACE entire main() function:**
+**APPEND to  main() function:**
 ```glsl
 void main() {
     // PHASE 4: Global buffer implementation
