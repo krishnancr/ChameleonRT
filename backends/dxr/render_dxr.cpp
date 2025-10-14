@@ -267,7 +267,7 @@ void RenderDXR::set_scene(const Scene &scene)
         D3D12_RAYTRACING_INSTANCE_DESC *buf =
             static_cast<D3D12_RAYTRACING_INSTANCE_DESC *>(upload_instance_buf.map());
 
-        std::cout << "[Phase 4 DEBUG] Instance to HitGroup mapping:\n";
+        std::cout << "Instance to HitGroup mapping:\n";
         for (size_t i = 0; i < scene.instances.size(); ++i) {
             const auto &inst = scene.instances[i];
             buf[i].InstanceID = i;
@@ -419,14 +419,13 @@ void RenderDXR::set_scene(const Scene &scene)
     }
 
     // ============================================================================
-    // Phase 2: Create Global Buffers (for shader access)
+    // Create Global Buffers (for shader access)
     // ============================================================================
-    // NOTE: Still creating per-geometry buffers for BLAS above (unchanged)
-    std::cout << "[Phase 2] Creating global buffers...\n";
+    std::cout << "Creating global buffers...\n";
 
     // 1. Global Vertex Buffer (positions)
     if (!scene.global_vertices.empty()) {
-        global_vertex_count = scene.global_vertices.size();  // Phase 3.2: Store count
+        global_vertex_count = scene.global_vertices.size();
         
         dxr::Buffer upload_global_verts = dxr::Buffer::upload(
             device.Get(),
@@ -456,7 +455,7 @@ void RenderDXR::set_scene(const Scene &scene)
 
     // 2. Global Index Buffer (uvec3 triangles)
     if (!scene.global_indices.empty()) {
-        global_index_count = scene.global_indices.size();  // Phase 3.2: Store count
+        global_index_count = scene.global_indices.size();
         
         dxr::Buffer upload_global_indices = dxr::Buffer::upload(
             device.Get(),
@@ -486,7 +485,7 @@ void RenderDXR::set_scene(const Scene &scene)
 
     // 3. Global Normal Buffer (may be empty)
     if (!scene.global_normals.empty()) {
-        global_normal_count = scene.global_normals.size();  // Phase 3.2: Store count
+        global_normal_count = scene.global_normals.size();
         
         dxr::Buffer upload_global_normals = dxr::Buffer::upload(
             device.Get(),
@@ -516,7 +515,7 @@ void RenderDXR::set_scene(const Scene &scene)
 
     // 4. Global UV Buffer (may be empty)
     if (!scene.global_uvs.empty()) {
-        global_uv_count = scene.global_uvs.size();  // Phase 3.2: Store count
+        global_uv_count = scene.global_uvs.size();
         
         dxr::Buffer upload_global_uvs = dxr::Buffer::upload(
             device.Get(),
@@ -546,7 +545,7 @@ void RenderDXR::set_scene(const Scene &scene)
 
     // 5. MeshDesc Buffer
     if (!scene.mesh_descriptors.empty()) {
-        mesh_desc_count = scene.mesh_descriptors.size();  // Phase 3.2: Store count
+        mesh_desc_count = scene.mesh_descriptors.size();
         
         dxr::Buffer upload_mesh_descs = dxr::Buffer::upload(
             device.Get(),
@@ -574,7 +573,7 @@ void RenderDXR::set_scene(const Scene &scene)
         sync_gpu();
     }
 
-    std::cout << "[Phase 2] Global buffers created successfully:\n";
+    std::cout << "Global buffers created successfully:\n";
     std::cout << "  - Vertices (vec3):  " << scene.global_vertices.size() 
               << " (" << (scene.global_vertices.size() * sizeof(glm::vec3)) << " bytes)\n";
     std::cout << "  - Indices (uvec3):  " << scene.global_indices.size() 
@@ -586,8 +585,8 @@ void RenderDXR::set_scene(const Scene &scene)
     std::cout << "  - MeshDescs:        " << scene.mesh_descriptors.size() 
               << " (" << (scene.mesh_descriptors.size() * sizeof(MeshDesc)) << " bytes)\n";
 
-    // Phase 2 Verification: Check GPU addresses and resource states
-    std::cout << "[Phase 2] GPU Upload Verification:\n";
+    // GPU Upload Verification: Check GPU addresses and resource states
+    std::cout << "GPU Upload Verification:\n";
     if (!scene.global_vertices.empty()) {
         D3D12_GPU_VIRTUAL_ADDRESS gpu_va = global_vertex_buffer->GetGPUVirtualAddress();
         std::cout << "  - globalVertices GPU address: 0x" << std::hex << gpu_va << std::dec;
@@ -896,37 +895,27 @@ void RenderDXR::build_raytracing_pipeline()
     shader_libraries.emplace_back(
         render_dxr_dxil,
         sizeof(render_dxr_dxil),
-        // Phase 4: Removed old ClosestHit from exports since all hit groups now use ClosestHit_GlobalBuffers
-        std::vector<std::wstring>{L"RayGen", L"Miss", L"ClosestHit_GlobalBuffers", L"ShadowMiss"}
+        std::vector<std::wstring>{L"RayGen", L"Miss", L"ClosestHit", L"ShadowMiss"}
     );
 #endif
 
-    // Phase 4: Move descriptor heaps to global root signature so ClosestHit_GlobalBuffers can access them
+    // Move descriptor heaps to global root signature so ClosestHit can access them
     dxr::RootSignature global_root_sig =
         dxr::RootSignatureBuilder::global()
             .add_desc_heap("cbv_srv_uav_heap", raygen_desc_heap)
             .add_desc_heap("sampler_heap", raygen_sampler_heap)
             .create(device.Get());
 
-    // Create the root signature for our ray gen shader (now only has local constants)
+    // Create the root signature for our ray gen shader (only has local constants)
     dxr::RootSignature raygen_root_sig =
         dxr::RootSignatureBuilder::local()
             .add_constants("SceneParams", 1, 1, 0)
             .create(device.Get());
 
-    // Create the root signature for our closest hit function (OLD path - space1 buffers)
-    dxr::RootSignature hitgroup_root_sig = dxr::RootSignatureBuilder::local()
-                                               .add_srv("vertex_buf", 0, 1)
-                                               .add_srv("index_buf", 1, 1)
-                                               .add_srv("normal_buf", 2, 1)
-                                               .add_srv("uv_buf", 3, 1)
-                                               .add_constants("MeshData", 0, 3, 1)
-                                               .create(device.Get());
-
-    // Phase 4: Create minimal local root signature for ClosestHit_GlobalBuffers
-    // CRITICAL: Uses space0 (not space1) so Slang can express it!
+    // Create the local root signature for ClosestHit
+    // Uses space0 (not space1) for Slang compatibility
     // Uses b2 to avoid conflict with ViewParams (b0) and SceneParams (b1)
-    dxr::RootSignature hitgroup_global_root_sig = dxr::RootSignatureBuilder::local()
+    dxr::RootSignature hitgroup_root_sig = dxr::RootSignatureBuilder::local()
                                                       .add_constants("HitGroupData", 2, 1, 0)  // b2, space0
                                                       .create(device.Get());
 
@@ -958,12 +947,10 @@ void RenderDXR::build_raytracing_pipeline()
                 all_exports, 8 * sizeof(float), 2 * sizeof(float))
             .set_max_recursion(1);
 
-    // Setup hit groups and shader root signatures for our instances.
-    // For now this is also easy since they all share the same programs and root signatures,
-    // but we just need different hitgroups to set the different params for the meshes
+    // Setup hit groups and shader root signatures for our instances
     std::vector<std::wstring> hg_names;
     size_t hit_group_index = 0;
-    std::cout << "[Phase 4 DEBUG] Hit group to MeshDesc mapping:\n";
+    std::cout << "Hit group to MeshDesc mapping:\n";
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id].geometries.size(); ++j) {
@@ -975,16 +962,12 @@ void RenderDXR::build_raytracing_pipeline()
                       << "_geom" << j << " -> MeshDesc[" << hit_group_index << "]\n";
             hit_group_index++;
 
-            // Phase 4: Switch to ClosestHit_GlobalBuffers shader
-            // Note: ClosestHit_GlobalBuffers uses global descriptor heap (space0),
-            // so it doesn't need a local root signature
             rt_pipeline_builder.add_hit_group(
-                {dxr::HitGroup(hg_name, D3D12_HIT_GROUP_TYPE_TRIANGLES, L"ClosestHit_GlobalBuffers")});
+                {dxr::HitGroup(hg_name, D3D12_HIT_GROUP_TYPE_TRIANGLES, L"ClosestHit")});
         }
     }
-    // Phase 4: Assign minimal local root signature to new hit groups
-    // They need meshDescIndex parameter to know which MeshDesc to read
-    rt_pipeline_builder.set_shader_root_sig(hg_names, hitgroup_global_root_sig);
+    // Assign local root signature to all hit groups
+    rt_pipeline_builder.set_shader_root_sig(hg_names, hitgroup_root_sig);
 
     rt_pipeline = rt_pipeline_builder.create(device.Get());
 }
@@ -993,7 +976,7 @@ void RenderDXR::build_shader_resource_heap()
 {
     // The CBV/SRV/UAV resource heap has the pointers/views things to our output image buffer
     // and the top level acceleration structure, and any textures
-    std::cout << "[Phase 3.1] Building descriptor heap with global buffers...\n";
+    std::cout << "Building descriptor heap with global buffers...\n";
     
     raygen_desc_heap = dxr::DescriptorHeapBuilder()
 #if REPORT_RAY_STATS
@@ -1004,10 +987,10 @@ void RenderDXR::build_shader_resource_heap()
                            .add_srv_range(3, 0, 0)
                            .add_cbv_range(1, 0, 0)
                            .add_srv_range(!textures.empty() ? textures.size() : 1, 30, 0)
-                           .add_srv_range(5, 10, 0)  // Phase 3: t10-t14 (global buffers)
+                           .add_srv_range(5, 10, 0)  // t10-t14 (global buffers)
                            .create(device.Get());
 
-    std::cout << "[Phase 3.1] Descriptor heap layout:\n";
+    std::cout << "Descriptor heap layout:\n";
     std::cout << "  UAVs: 2 (u0-u1)\n";
     std::cout << "  SRVs (scene): 3 (t0-t2)\n";
     std::cout << "  CBVs: 1 (b0)\n";
@@ -1021,7 +1004,7 @@ void RenderDXR::build_shader_resource_heap()
 
 void RenderDXR::build_shader_binding_table()
 {
-    std::cout << "[Phase 4] Building shader binding table...\n";
+    std::cout << "Building shader binding table...\n";
     rt_pipeline.map_shader_table();
     {
         uint8_t *map = rt_pipeline.shader_record(L"RayGen");
@@ -1029,10 +1012,9 @@ void RenderDXR::build_shader_binding_table()
 
         const uint32_t num_lights = light_buf.size() / sizeof(QuadLight);
         std::memcpy(map + sig->offset("SceneParams"), &num_lights, sizeof(uint32_t));
-
-        // Phase 4: Descriptor heaps moved to global root signature, no longer in local raygen_root_sig
     }
-    // Phase 4: Write meshDescIndex to shader records for ClosestHit_GlobalBuffers
+    
+    // Write meshDescIndex to shader records for ClosestHit
     size_t mesh_desc_index = 0;
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
@@ -1040,8 +1022,6 @@ void RenderDXR::build_shader_binding_table()
             const std::wstring hg_name =
                 L"HitGroup_param_mesh" + std::to_wstring(i) + L"_geom" + std::to_wstring(j);
 
-            // Phase 4: Write meshDescIndex to shader record
-            // ClosestHit_GlobalBuffers needs to know which MeshDesc to read from global buffer
             uint8_t *map = rt_pipeline.shader_record(hg_name);
             const dxr::RootSignature *sig = rt_pipeline.shader_signature(hg_name);
 
@@ -1195,13 +1175,13 @@ void RenderDXR::build_descriptor_heap()
             device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
-    // Phase 3.2: Create SRVs for global buffers at t10-t14
-    std::cout << "[Phase 3.2] Creating SRVs for global buffers...\n";
+    // Create SRVs for global buffers at t10-t14
+    std::cout << "Creating SRVs for global buffers...\n";
     
     const UINT descriptor_increment = device->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     
-    std::cout << "[Phase 3.2] Current heap_handle offset from start: " 
+    std::cout << "Current heap_handle offset from start: " 
               << (heap_handle.ptr - raygen_desc_heap.cpu_desc_handle().ptr) / descriptor_increment
               << " descriptors\n";
 
@@ -1325,7 +1305,7 @@ void RenderDXR::build_descriptor_heap()
     }
     heap_handle.ptr += descriptor_increment;
 
-    std::cout << "[Phase 3.2] SRVs created successfully at t10-t14\n";
+    std::cout << "SRVs created successfully at t10-t14\n";
 
 
     // Write the sampler to the sampler heap
@@ -1353,7 +1333,7 @@ void RenderDXR::record_command_lists()
     render_cmd_list->SetPipelineState1(rt_pipeline.get());
     render_cmd_list->SetComputeRootSignature(rt_pipeline.global_sig());
     
-    // Phase 4: Bind descriptor heaps to global root signature
+    // Bind descriptor heaps to global root signature
     // Parameter 0: cbv_srv_uav_heap
     // Parameter 1: sampler_heap
     render_cmd_list->SetComputeRootDescriptorTable(

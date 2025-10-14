@@ -279,11 +279,10 @@ void ShadowMiss(inout OcclusionHitInfo occlusion : SV_RayPayload) {
 }
 
 // ============================================================================
-// PHASE 1: Global Buffer Declarations (NEW - Parallel Implementation)
+// Global Buffer Declarations
 // ============================================================================
-// These buffers will eventually replace the space1 per-geometry buffers below.
-// For now, they exist alongside the old path for incremental validation.
-// IMPORTANT: Data layout EXACTLY matches space1 buffers (separate arrays for vertices/normals/uvs)
+// Global buffers for all scene geometry (space0, registers t10-t14)
+// Data layout: separate arrays for vertices, indices, normals, UVs
 
 // MeshDesc structure for per-mesh metadata
 struct MeshDesc {
@@ -299,84 +298,25 @@ struct MeshDesc {
 
 // Global buffers (space0, registers t10-t14)
 // NOTE: Moved unbounded texture array from t3 to t30 to free up t10-t14 for global buffers
-// NOTE: Declared but NOT BOUND yet (Phase 2 will create them, Phase 3 will bind them)
-// Data layout matches OLD space1 per-geometry buffers: separate arrays for vertices, indices, normals, UVs
 StructuredBuffer<float3> globalVertices : register(t10, space0);
 StructuredBuffer<uint3> globalIndices : register(t11, space0);
 StructuredBuffer<float3> globalNormals : register(t12, space0);
 StructuredBuffer<float2> globalUVs : register(t13, space0);
 StructuredBuffer<MeshDesc> meshDescs : register(t14, space0);
 
-// ============================================================================
-// OLD PATH: Per-mesh parameters for the closest hit (space1)
-// ============================================================================
-// These will be removed in Phase 5 after global buffers are validated.
-
-StructuredBuffer<float3> vertices : register(t0, space1);
-StructuredBuffer<uint3> indices : register(t1, space1);
-StructuredBuffer<float3> normals : register(t2, space1);
-StructuredBuffer<float2> uvs : register(t3, space1);
-
-cbuffer MeshData : register(b0, space1) {
-    uint32_t num_normals;
-    uint32_t num_uvs;
-    uint32_t material_id;
-}
-
-// PHASE 4: Minimal local root signature parameter for global buffer path (SPACE 0!)
-// This is Slang-compatible since it uses space0
+// Local root signature parameter (SPACE 0 for Slang compatibility)
 // Using b2 to avoid conflict with ViewParams (b0) and SceneParams (b1)
 cbuffer HitGroupData : register(b2, space0) {
     uint32_t meshDescIndex;  // Index into meshDescs buffer
 }
 
+// ============================================================================
+// ClosestHit Shader
+// ============================================================================
+
 [shader("closesthit")] 
 void ClosestHit(inout HitInfo payload, Attributes attrib) {
-    uint3 idx = indices[NonUniformResourceIndex(PrimitiveIndex())];
-
-    float3 va = vertices[NonUniformResourceIndex(idx.x)];
-    float3 vb = vertices[NonUniformResourceIndex(idx.y)];
-    float3 vc = vertices[NonUniformResourceIndex(idx.z)];
-    float3 ng = normalize(cross(vb - va, vc - va));
-
-    float3 n = ng;
-    // TODO per-vertex normals seems to give some pretty bad silhouetting,
-    // even on some models which do seem well tesselated?
-    // Implement shadow/bump terminator fix?
-#if 0
-    if (num_normals > 0) {
-        float3 na = normals[NonUniformResourceIndex(idx.x)];
-        float3 nb = normals[NonUniformResourceIndex(idx.y)];
-        float3 nc = normals[NonUniformResourceIndex(idx.z)];
-        n = normalize((1.f - attrib.bary.x - attrib.bary.y) * na
-                + attrib.bary.x * nb + attrib.bary.y * nc);
-    }
-#endif
-
-    float2 uv = float2(0, 0);
-    if (num_uvs > 0) {
-        float2 uva = uvs[NonUniformResourceIndex(idx.x)];
-        float2 uvb = uvs[NonUniformResourceIndex(idx.y)];
-        float2 uvc = uvs[NonUniformResourceIndex(idx.z)];
-        uv = (1.f - attrib.bary.x - attrib.bary.y) * uva
-            + attrib.bary.x * uvb + attrib.bary.y * uvc;
-    }
-
-    payload.color_dist = float4(uv, 0, RayTCurrent());
-    float3x3 inv_transp = float3x3(WorldToObject4x3()[0], WorldToObject4x3()[1], WorldToObject4x3()[2]);
-    payload.normal = float4(normalize(mul(inv_transp, n)), material_id);
-}
-
-// ============================================================================
-// PHASE 1: New ClosestHit Using Global Buffers (Parallel Implementation)
-// ============================================================================
-// This shader uses the global buffers (t10-t14, space0) instead of space1.
-// It's IDENTICAL to ClosestHit() above, just with offset-based indexing.
-// Currently NOT used by the pipeline - will be switched in Phase 4.
-
-[shader("closesthit")] 
-void ClosestHit_GlobalBuffers(inout HitInfo payload, Attributes attrib) {
-    // Phase 4 FIX: Use meshDescIndex from SBT instead of InstanceID()
+    // Use meshDescIndex from SBT to identify which geometry was hit
     // InstanceID() returns instance index (TLAS), but we need geometry index (BLAS)
     // Since GeometryIndex() is unavailable in SM 6.3, we pass meshDescIndex via SBT
     const uint32_t meshID = meshDescIndex;
@@ -397,12 +337,10 @@ void ClosestHit_GlobalBuffers(inout HitInfo payload, Attributes attrib) {
     float3 ng = normalize(cross(vb - va, vc - va));
 
     float3 n = ng;
-    // Per-vertex normals (disabled for now to match original behavior)
+    // Per-vertex normals (can be enabled if needed)
     uint3 local_vertex_idx = idx - uint3(mesh.vbOffset, mesh.vbOffset, mesh.vbOffset);
 #if 0
     if (mesh.num_normals > 0) {
-        // Convert global vertex indices to local indices for per-vertex attribute lookup
-        uint3 local_vertex_idx = idx - uint3(mesh.vbOffset, mesh.vbOffset, mesh.vbOffset);
         float3 na = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.x)];
         float3 nb = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.y)];
         float3 nc = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.z)];
@@ -412,7 +350,6 @@ void ClosestHit_GlobalBuffers(inout HitInfo payload, Attributes attrib) {
 #endif
 
     // Convert global vertex indices to local indices for UV lookup
-    
     float2 uv = float2(0, 0);
     if (mesh.num_uvs > 0) {
         float2 uva = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.x)];
