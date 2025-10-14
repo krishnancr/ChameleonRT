@@ -12,7 +12,7 @@
 #include "slang_shader_compiler.h"
 #endif
 
-// PHASE 4 COMPLETE: Simplified HitGroupParams using global buffers
+// Simplified HitGroupParams using global buffers (meshDescIndex only)
 struct HitGroupParams {
     uint32_t meshDescIndex = 0;  // Index into global meshDescs buffer
 };
@@ -22,7 +22,7 @@ struct RenderVulkan : RenderBackend {
 
     std::shared_ptr<vkrt::Buffer> view_param_buf, img_readback_buf, mat_params, light_params;
 
-    // PHASE 1: Global geometry buffers (PARALLEL IMPLEMENTATION)
+    // Global geometry buffers for all scene data
     std::shared_ptr<vkrt::Buffer> global_vertex_buffer;
     std::shared_ptr<vkrt::Buffer> global_index_buffer;
     std::shared_ptr<vkrt::Buffer> global_normal_buffer;
@@ -116,7 +116,7 @@ private:
 
     void record_command_buffers();
 
-    // PHASE 2: Helper function for uploading global buffers (PARALLEL IMPLEMENTATION)
+    // Helper function for uploading global buffers to GPU
     void upload_global_buffer(std::shared_ptr<vkrt::Buffer>& gpu_buf,
                              const void* data,
                              size_t size,

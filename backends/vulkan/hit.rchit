@@ -4,7 +4,7 @@
 #include "util.glsl"
 
 // ============================================================================
-// PHASE 4: Global Buffer Implementation (COMPLETE)
+// Global Buffer Implementation
 // ============================================================================
 
 // MeshDesc structure (matches CPU-side util/mesh.h)
@@ -57,7 +57,7 @@ void main() {
     // Load triangle indices (ALREADY GLOBAL - pre-adjusted during scene build!)
     const uvec3 idx = globalIndices.i[mesh.ibOffset + gl_PrimitiveID];
     
-    // ✅ CORRECT: Load vertex positions (direct indexing - idx is already global)
+    // Load vertex positions (direct indexing - idx is already global)
     // DO NOT add mesh.vbOffset here - would cause double-offset bug!
     const vec3 va = globalVertices.v[idx.x];
     const vec3 vb = globalVertices.v[idx.y];
@@ -69,7 +69,7 @@ void main() {
     // Load UVs (convert to local indices first!)
     vec2 uv = vec2(0);
     if (mesh.num_uvs > 0) {
-        // ✅ CORRECT: Convert global indices to local, then offset into UV buffer
+        // Convert global indices to local, then offset into UV buffer
         const uvec3 local_idx = idx - uvec3(mesh.vbOffset);
         const vec2 uva = globalUVs.uv[mesh.uvOffset + local_idx.x];
         const vec2 uvb = globalUVs.uv[mesh.uvOffset + local_idx.y];

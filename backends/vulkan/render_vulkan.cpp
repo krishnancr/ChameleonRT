@@ -7,7 +7,7 @@
 #include <string>
 #include "spv_shaders_embedded_spv.h"
 #include "util.h"
-#include "mesh.h"  // PHASE 2: For MeshDesc structure
+#include "mesh.h"  // For MeshDesc structure
 #include <glm/ext.hpp>
 
 RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
@@ -672,9 +672,8 @@ void RenderVulkan::set_scene(const Scene &scene)
     }
 
     // ============================================================================
-    // PHASE 2: Create Global Buffers (PARALLEL IMPLEMENTATION - matches DXR Phase 2)
+    // Create global geometry buffers from scene data
     // ============================================================================
-    std::cout << "\n[PHASE 2] Creating global buffers from scene data...\n";
     
     // 1. Global Vertex Buffer (positions)
     if (!scene.global_vertices.empty()) {
@@ -686,9 +685,6 @@ void RenderVulkan::set_scene(const Scene &scene)
             scene.global_vertices.size() * sizeof(glm::vec3),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
-        
-        std::cout << "  globalVertices: " << global_vertex_count << " elements ("
-                  << (global_vertex_count * sizeof(glm::vec3)) << " bytes)\n";
     }
     
     // 2. Global Index Buffer (uvec3 triangles)
@@ -701,9 +697,6 @@ void RenderVulkan::set_scene(const Scene &scene)
             scene.global_indices.size() * sizeof(glm::uvec3),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
-        
-        std::cout << "  globalIndices: " << global_index_count << " triangles ("
-                  << (global_index_count * sizeof(glm::uvec3)) << " bytes)\n";
     }
     
     // 3. Global Normal Buffer
@@ -716,9 +709,6 @@ void RenderVulkan::set_scene(const Scene &scene)
             scene.global_normals.size() * sizeof(glm::vec3),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
-        
-        std::cout << " globalNormals: " << global_normal_count << " elements ("
-                  << (global_normal_count * sizeof(glm::vec3)) << " bytes)\n";
     }
     
     // 4. Global UV Buffer
@@ -731,9 +721,6 @@ void RenderVulkan::set_scene(const Scene &scene)
             scene.global_uvs.size() * sizeof(glm::vec2),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
-        
-        std::cout << " globalUVs: " << global_uv_count << " elements ("
-                  << (global_uv_count * sizeof(glm::vec2)) << " bytes)\n";
     }
     
     // 5. MeshDesc Buffer
@@ -746,12 +733,7 @@ void RenderVulkan::set_scene(const Scene &scene)
             scene.mesh_descriptors.size() * sizeof(MeshDesc),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
-        
-        std::cout << "  meshDescs: " << mesh_desc_count << " descriptors ("
-                  << (mesh_desc_count * sizeof(MeshDesc)) << " bytes)\n";
     }
-    
-    std::cout << "[PHASE 2] Global buffers created successfully\n\n";
 
     build_raytracing_pipeline();
     build_shader_descriptor_table();
@@ -861,7 +843,7 @@ void RenderVulkan::build_raytracing_pipeline()
             .add_binding(
                 6, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
 #endif
-            // PHASE 3: Add global buffer bindings (PARALLEL IMPLEMENTATION)
+            // Global buffer bindings (10-14)
             .add_binding(
                 10, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
             .add_binding(
@@ -872,7 +854,7 @@ void RenderVulkan::build_raytracing_pipeline()
                 13, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
             .add_binding(
                 14, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
-            // DESCRIPTOR FLATTENING: Move textures from Set 1 to Set 0, binding 30 (matches DXR t30+)
+            // Textures at binding 30 (single descriptor set architecture)
             .add_binding(
                 30,
                 std::max(textures.size(), size_t(1)),
@@ -900,107 +882,6 @@ void RenderVulkan::build_raytracing_pipeline()
 
     CHECK_VULKAN(vkCreatePipelineLayout(
         device->logical_device(), &pipeline_create_info, nullptr, &pipeline_layout));
-
-#ifdef USE_SLANG_COMPILER
-    // ======================================================================
-    // VULKAN PROMPT 2: Test Basic GLSL → SPIRV Compilation
-    // ======================================================================
-    // Test 1: Simple fragment shader (no extensions, no ray tracing)
-    std::cout << "\n[Slang Vulkan] Testing basic GLSL → SPIRV compilation..." << std::endl;
-    
-    const std::string simple_frag_glsl = R"(
-#version 450
-
-layout(location = 0) in vec3 fragColor;
-layout(location = 0) out vec4 outColor;
-
-void main() {
-    outColor = vec4(fragColor, 1.0);
-}
-)";
-
-    std::cout << "[Slang Vulkan] Compiling simple fragment shader..." << std::endl;
-    auto frag_result = slangCompiler.compileGLSLToSPIRV(
-        simple_frag_glsl, "main", chameleonrt::ShaderStage::Fragment);
-    
-    if (!frag_result) {
-        std::string error = slangCompiler.getLastError();
-        std::cerr << "[Slang Vulkan] Fragment shader compilation FAILED: " << error << std::endl;
-        throw std::runtime_error("Basic GLSL fragment shader compilation failed");
-    }
-    
-    std::cout << "[Slang Vulkan] Fragment shader compiled! SPIRV size: " 
-              << frag_result->bytecode.size() << " bytes" << std::endl;
-    
-    // Test 2: Simple vertex shader
-    const std::string simple_vert_glsl = R"(
-#version 450
-
-layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inColor;
-
-layout(location = 0) out vec3 fragColor;
-
-void main() {
-    gl_Position = vec4(inPosition, 1.0);
-    fragColor = inColor;
-}
-)";
-
-    std::cout << "[Slang Vulkan] Compiling simple vertex shader..." << std::endl;
-    auto vert_result = slangCompiler.compileGLSLToSPIRV(
-        simple_vert_glsl, "main", chameleonrt::ShaderStage::Vertex);
-    
-    if (!vert_result) {
-        std::string error = slangCompiler.getLastError();
-        std::cerr << "[Slang Vulkan] Vertex shader compilation FAILED: " << error << std::endl;
-        throw std::runtime_error("Basic GLSL vertex shader compilation failed");
-    }
-    
-    std::cout << "[Slang Vulkan] Vertex shader compiled! SPIRV size: " 
-              << vert_result->bytecode.size() << " bytes" << std::endl;
-    
-    // Test 3: Validate SPIRV is acceptable to Vulkan
-    VkShaderModuleCreateInfo frag_create_info = {};
-    frag_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    frag_create_info.codeSize = frag_result->bytecode.size();
-    frag_create_info.pCode = reinterpret_cast<const uint32_t*>(frag_result->bytecode.data());
-    
-    VkShaderModule test_frag_module = VK_NULL_HANDLE;
-    VkResult frag_vk_result = vkCreateShaderModule(
-        device->logical_device(), &frag_create_info, nullptr, &test_frag_module);
-    
-    if (frag_vk_result != VK_SUCCESS) {
-        std::cerr << "[Slang Vulkan] ERROR: Fragment SPIRV rejected by Vulkan: " 
-                  << frag_vk_result << std::endl;
-        throw std::runtime_error("Generated SPIRV invalid");
-    }
-    
-    std::cout << "[Slang Vulkan] Fragment SPIRV validated by Vulkan" << std::endl;
-    vkDestroyShaderModule(device->logical_device(), test_frag_module, nullptr);
-    
-    VkShaderModuleCreateInfo vert_create_info = {};
-    vert_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    vert_create_info.codeSize = vert_result->bytecode.size();
-    vert_create_info.pCode = reinterpret_cast<const uint32_t*>(vert_result->bytecode.data());
-    
-    VkShaderModule test_vert_module = VK_NULL_HANDLE;
-    VkResult vert_vk_result = vkCreateShaderModule(
-        device->logical_device(), &vert_create_info, nullptr, &test_vert_module);
-    
-    if (vert_vk_result != VK_SUCCESS) {
-        std::cerr << "[Slang Vulkan] ERROR: Vertex SPIRV rejected by Vulkan: " 
-                  << vert_vk_result << std::endl;
-        throw std::runtime_error("Generated SPIRV invalid");
-    }
-    
-    std::cout << "[Slang Vulkan] Vertex SPIRV validated by Vulkan" << std::endl;
-    vkDestroyShaderModule(device->logical_device(), test_vert_module, nullptr);
-    
-    std::cout << "\n[Slang Vulkan] SUCCESS! Basic GLSL->SPIRV compilation works!" << std::endl;
-    std::cout << "[Slang Vulkan] Prompt 2 COMPLETE - proceeding with embedded shaders\n" << std::endl;
-    // ======================================================================
-#endif
 
     // Load the shader modules for our pipeline and build the pipeline
     auto raygen_shader =
@@ -1083,9 +964,8 @@ void RenderVulkan::build_shader_descriptor_table()
     updater.update(*device);
 
     // ============================================================================
-    // PHASE 3: Write Global Buffer Descriptors (PARALLEL IMPLEMENTATION)
+    // Write global buffer descriptors
     // ============================================================================
-    std::cout << "\n[PHASE 3] Writing global buffer descriptors...\n";
     
     // Global vertex buffer (binding 10)
     if (global_vertex_buffer) {
@@ -1104,7 +984,6 @@ void RenderVulkan::build_shader_descriptor_table()
         vertex_write.pBufferInfo = &vertex_info;
         
         vkUpdateDescriptorSets(device->logical_device(), 1, &vertex_write, 0, nullptr);
-        std::cout << "  ✅ Binding 10 (globalVertices): " << global_vertex_count << " elements\n";
     }
     
     // Global index buffer (binding 11)
@@ -1124,7 +1003,6 @@ void RenderVulkan::build_shader_descriptor_table()
         index_write.pBufferInfo = &index_info;
         
         vkUpdateDescriptorSets(device->logical_device(), 1, &index_write, 0, nullptr);
-        std::cout << "  ✅ Binding 11 (globalIndices): " << global_index_count << " elements\n";
     }
     
     // Global normal buffer (binding 12)
@@ -1144,7 +1022,6 @@ void RenderVulkan::build_shader_descriptor_table()
         normal_write.pBufferInfo = &normal_info;
         
         vkUpdateDescriptorSets(device->logical_device(), 1, &normal_write, 0, nullptr);
-        std::cout << "  ✅ Binding 12 (globalNormals): " << global_normal_count << " elements\n";
     }
     
     // Global UV buffer (binding 13)
@@ -1164,7 +1041,6 @@ void RenderVulkan::build_shader_descriptor_table()
         uv_write.pBufferInfo = &uv_info;
         
         vkUpdateDescriptorSets(device->logical_device(), 1, &uv_write, 0, nullptr);
-        std::cout << "  ✅ Binding 13 (globalUVs): " << global_uv_count << " elements\n";
     }
     
     // MeshDesc buffer (binding 14)
@@ -1184,10 +1060,7 @@ void RenderVulkan::build_shader_descriptor_table()
         mesh_write.pBufferInfo = &mesh_info;
         
         vkUpdateDescriptorSets(device->logical_device(), 1, &mesh_write, 0, nullptr);
-        std::cout << "  ✅ Binding 14 (meshDescs): " << mesh_desc_count << " elements\n";
     }
-    
-    std::cout << "[PHASE 3] Global buffer descriptors bound successfully\n\n";
 }
 
 void RenderVulkan::build_shader_binding_table()
@@ -1217,8 +1090,7 @@ void RenderVulkan::build_shader_binding_table()
         *params = light_params->size() / sizeof(QuadLight);
     }
 
-    // PHASE 4 COMPLETE: Write simplified SBT with only meshDescIndex
-    std::cout << "\n[PHASE 4] Writing SBT with meshDescIndex...\n";
+    // Write simplified SBT with only meshDescIndex
     
     size_t mesh_desc_index = 0;
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
@@ -1233,20 +1105,9 @@ void RenderVulkan::build_shader_binding_table()
             // Write only meshDescIndex - all geometry data accessed via global buffers
             params->meshDescIndex = static_cast<uint32_t>(mesh_desc_index);
             
-            // Debug output for first few geometries
-            if (mesh_desc_index < 5) {
-                std::cout << "  HitGroup[" << mesh_desc_index << "] "
-                          << "(param_mesh" << i << "_geom" << j << ") -> "
-                          << "meshDescIndex=" << params->meshDescIndex << "\n";
-            }
-            
             mesh_desc_index++;
         }
     }
-    
-    std::cout << "[PHASE 4] SBT complete: " << mesh_desc_index << " hit groups configured\n";
-    std::cout << "  📊 SBT size: " << sizeof(HitGroupParams) << " bytes per record "
-              << "(single uint32 meshDescIndex)\n\n";
 
     {
         VkCommandBufferBeginInfo begin_info = {};
@@ -1414,7 +1275,7 @@ void RenderVulkan::record_command_buffers()
     CHECK_VULKAN(vkEndCommandBuffer(readback_cmd_buf));
 }
 
-// PHASE 2: Helper function for uploading global buffers (PARALLEL IMPLEMENTATION)
+// Upload global buffer data to GPU via staging buffer
 void RenderVulkan::upload_global_buffer(std::shared_ptr<vkrt::Buffer>& gpu_buf,
                                        const void* data,
                                        size_t size,
