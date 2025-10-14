@@ -267,11 +267,17 @@ void RenderDXR::set_scene(const Scene &scene)
         D3D12_RAYTRACING_INSTANCE_DESC *buf =
             static_cast<D3D12_RAYTRACING_INSTANCE_DESC *>(upload_instance_buf.map());
 
+        std::cout << "[Phase 4 DEBUG] Instance to HitGroup mapping:\n";
         for (size_t i = 0; i < scene.instances.size(); ++i) {
             const auto &inst = scene.instances[i];
             buf[i].InstanceID = i;
             buf[i].InstanceContributionToHitGroupIndex =
                 parameterized_mesh_sbt_offsets[inst.parameterized_mesh_id];
+            
+            std::cout << "  Instance[" << i << "] (InstanceID=" << i << ") -> "
+                      << "param_mesh" << inst.parameterized_mesh_id 
+                      << " -> HitGroupBase=" << buf[i].InstanceContributionToHitGroupIndex << "\n";
+            
             buf[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE;
             buf[i].AccelerationStructure =
                 meshes[parameterized_meshes[inst.parameterized_mesh_id].mesh_id]
@@ -908,7 +914,7 @@ void RenderDXR::build_raytracing_pipeline()
             .add_constants("SceneParams", 1, 1, 0)
             .create(device.Get());
 
-    // Create the root signature for our closest hit function
+    // Create the root signature for our closest hit function (OLD path - space1 buffers)
     dxr::RootSignature hitgroup_root_sig = dxr::RootSignatureBuilder::local()
                                                .add_srv("vertex_buf", 0, 1)
                                                .add_srv("index_buf", 1, 1)
@@ -916,6 +922,13 @@ void RenderDXR::build_raytracing_pipeline()
                                                .add_srv("uv_buf", 3, 1)
                                                .add_constants("MeshData", 0, 3, 1)
                                                .create(device.Get());
+
+    // Phase 4: Create minimal local root signature for ClosestHit_GlobalBuffers
+    // CRITICAL: Uses space0 (not space1) so Slang can express it!
+    // Uses b2 to avoid conflict with ViewParams (b0) and SceneParams (b1)
+    dxr::RootSignature hitgroup_global_root_sig = dxr::RootSignatureBuilder::local()
+                                                      .add_constants("HitGroupData", 2, 1, 0)  // b2, space0
+                                                      .create(device.Get());
 
     // Build RT pipeline - add all shader libraries
     dxr::RTPipelineBuilder rt_pipeline_builder =
@@ -949,12 +962,18 @@ void RenderDXR::build_raytracing_pipeline()
     // For now this is also easy since they all share the same programs and root signatures,
     // but we just need different hitgroups to set the different params for the meshes
     std::vector<std::wstring> hg_names;
+    size_t hit_group_index = 0;
+    std::cout << "[Phase 4 DEBUG] Hit group to MeshDesc mapping:\n";
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id].geometries.size(); ++j) {
             const std::wstring hg_name =
                 L"HitGroup_param_mesh" + std::to_wstring(i) + L"_geom" + std::to_wstring(j);
             hg_names.push_back(hg_name);
+            
+            std::cout << "  HitGroup[" << hit_group_index << "] = param_mesh" << i 
+                      << "_geom" << j << " -> MeshDesc[" << hit_group_index << "]\n";
+            hit_group_index++;
 
             // Phase 4: Switch to ClosestHit_GlobalBuffers shader
             // Note: ClosestHit_GlobalBuffers uses global descriptor heap (space0),
@@ -963,9 +982,9 @@ void RenderDXR::build_raytracing_pipeline()
                 {dxr::HitGroup(hg_name, D3D12_HIT_GROUP_TYPE_TRIANGLES, L"ClosestHit_GlobalBuffers")});
         }
     }
-    // Phase 4: Don't assign local root signature to new hit groups
-    // They use the global descriptor heap via the global root signature
-    // rt_pipeline_builder.set_shader_root_sig(hg_names, hitgroup_root_sig);
+    // Phase 4: Assign minimal local root signature to new hit groups
+    // They need meshDescIndex parameter to know which MeshDesc to read
+    rt_pipeline_builder.set_shader_root_sig(hg_names, hitgroup_global_root_sig);
 
     rt_pipeline = rt_pipeline_builder.create(device.Get());
 }
@@ -1013,56 +1032,40 @@ void RenderDXR::build_shader_binding_table()
 
         // Phase 4: Descriptor heaps moved to global root signature, no longer in local raygen_root_sig
     }
+    // Phase 4: Write meshDescIndex to shader records for ClosestHit_GlobalBuffers
+    size_t mesh_desc_index = 0;
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id].geometries.size(); ++j) {
             const std::wstring hg_name =
                 L"HitGroup_param_mesh" + std::to_wstring(i) + L"_geom" + std::to_wstring(j);
 
-            // Phase 4: Skip shader record setup for ClosestHit_GlobalBuffers
-            // This shader uses only global resources (descriptor heap), no local root signature
-            // No parameters need to be written to the shader binding table
-            continue;
-
-            auto &geom = meshes[pm.mesh_id].geometries[j];
-
+            // Phase 4: Write meshDescIndex to shader record
+            // ClosestHit_GlobalBuffers needs to know which MeshDesc to read from global buffer
             uint8_t *map = rt_pipeline.shader_record(hg_name);
             const dxr::RootSignature *sig = rt_pipeline.shader_signature(hg_name);
 
-            D3D12_GPU_VIRTUAL_ADDRESS gpu_handle = geom.vertex_buf->GetGPUVirtualAddress();
-            std::memcpy(map + sig->offset("vertex_buf"),
-                        &gpu_handle,
-                        sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-            gpu_handle = geom.index_buf->GetGPUVirtualAddress();
-            std::memcpy(map + sig->offset("index_buf"),
-                        &gpu_handle,
-                        sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-            if (geom.normal_buf.size() != 0) {
-                gpu_handle = geom.normal_buf->GetGPUVirtualAddress();
-            } else {
-                gpu_handle = 0;
+            const uint32_t mesh_desc_idx = static_cast<uint32_t>(mesh_desc_index);
+            
+            // DEBUG: Print what we're writing
+            if (mesh_desc_index < 5) {
+                std::cout << "  Writing meshDescIndex=" << mesh_desc_idx 
+                          << " to HitGroup " << i << "_" << j 
+                          << " at offset=" << sig->offset("HitGroupData") << "\n";
             }
-            std::memcpy(map + sig->offset("normal_buf"),
-                        &gpu_handle,
-                        sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-            if (geom.uv_buf.size() != 0) {
-                gpu_handle = geom.uv_buf->GetGPUVirtualAddress();
-            } else {
-                gpu_handle = 0;
+            
+            std::memcpy(map + sig->offset("HitGroupData"),
+                        &mesh_desc_idx,
+                        sizeof(uint32_t));
+            
+            // DEBUG: Read back to verify
+            if (mesh_desc_index < 5) {
+                uint32_t readback;
+                std::memcpy(&readback, map + sig->offset("HitGroupData"), sizeof(uint32_t));
+                std::cout << "  Readback verification: " << readback << "\n";
             }
-            std::memcpy(
-                map + sig->offset("uv_buf"), &gpu_handle, sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-            const std::array<uint32_t, 3> mesh_data = {
-                uint32_t(geom.normal_buf.size() / sizeof(glm::vec3)),
-                uint32_t(geom.uv_buf.size() / sizeof(glm::vec2)),
-                pm.material_ids[j]};
-            std::memcpy(map + sig->offset("MeshData"),
-                        mesh_data.data(),
-                        mesh_data.size() * sizeof(uint32_t));
+            
+            mesh_desc_index++;
         }
     }
     rt_pipeline.unmap_shader_table();

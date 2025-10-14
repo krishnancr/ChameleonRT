@@ -323,6 +323,13 @@ cbuffer MeshData : register(b0, space1) {
     uint32_t material_id;
 }
 
+// PHASE 4: Minimal local root signature parameter for global buffer path (SPACE 0!)
+// This is Slang-compatible since it uses space0
+// Using b2 to avoid conflict with ViewParams (b0) and SceneParams (b1)
+cbuffer HitGroupData : register(b2, space0) {
+    uint32_t meshDescIndex;  // Index into meshDescs buffer
+}
+
 [shader("closesthit")] 
 void ClosestHit(inout HitInfo payload, Attributes attrib) {
     uint3 idx = indices[NonUniformResourceIndex(PrimitiveIndex())];
@@ -369,38 +376,48 @@ void ClosestHit(inout HitInfo payload, Attributes attrib) {
 
 [shader("closesthit")] 
 void ClosestHit_GlobalBuffers(inout HitInfo payload, Attributes attrib) {
-    // Get the mesh ID from InstanceID (assumes one mesh per BLAS instance)
-    const uint32_t meshID = InstanceID();
+    // Phase 4 FIX: Use meshDescIndex from SBT instead of InstanceID()
+    // InstanceID() returns instance index (TLAS), but we need geometry index (BLAS)
+    // Since GeometryIndex() is unavailable in SM 6.3, we pass meshDescIndex via SBT
+    const uint32_t meshID = meshDescIndex;
     
     // Load mesh descriptor
     MeshDesc mesh = meshDescs[NonUniformResourceIndex(meshID)];
     
     // Load indices from global buffer (with offset)
     uint3 idx = globalIndices[NonUniformResourceIndex(mesh.ibOffset + PrimitiveIndex())];
-
-    // Load vertices from global buffer (with offset)
-    float3 va = globalVertices[NonUniformResourceIndex(mesh.vbOffset + idx.x)];
-    float3 vb = globalVertices[NonUniformResourceIndex(mesh.vbOffset + idx.y)];
-    float3 vc = globalVertices[NonUniformResourceIndex(mesh.vbOffset + idx.z)];
+    
+    // CRITICAL: idx contains GLOBAL vertex indices (already offset by vbOffset during build)
+    // So we use idx directly for vertices, but need LOCAL indices for UVs/normals
+    
+    // Load vertices from global buffer (NO additional offset - idx is already global!)
+    float3 va = globalVertices[NonUniformResourceIndex(idx.x)];
+    float3 vb = globalVertices[NonUniformResourceIndex(idx.y)];
+    float3 vc = globalVertices[NonUniformResourceIndex(idx.z)];
     float3 ng = normalize(cross(vb - va, vc - va));
 
     float3 n = ng;
     // Per-vertex normals (disabled for now to match original behavior)
+    uint3 local_vertex_idx = idx - uint3(mesh.vbOffset, mesh.vbOffset, mesh.vbOffset);
 #if 0
     if (mesh.num_normals > 0) {
-        float3 na = globalNormals[NonUniformResourceIndex(mesh.normalOffset + idx.x)];
-        float3 nb = globalNormals[NonUniformResourceIndex(mesh.normalOffset + idx.y)];
-        float3 nc = globalNormals[NonUniformResourceIndex(mesh.normalOffset + idx.z)];
+        // Convert global vertex indices to local indices for per-vertex attribute lookup
+        uint3 local_vertex_idx = idx - uint3(mesh.vbOffset, mesh.vbOffset, mesh.vbOffset);
+        float3 na = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.x)];
+        float3 nb = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.y)];
+        float3 nc = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.z)];
         n = normalize((1.f - attrib.bary.x - attrib.bary.y) * na
                 + attrib.bary.x * nb + attrib.bary.y * nc);
     }
 #endif
 
+    // Convert global vertex indices to local indices for UV lookup
+    
     float2 uv = float2(0, 0);
     if (mesh.num_uvs > 0) {
-        float2 uva = globalUVs[NonUniformResourceIndex(mesh.uvOffset + idx.x)];
-        float2 uvb = globalUVs[NonUniformResourceIndex(mesh.uvOffset + idx.y)];
-        float2 uvc = globalUVs[NonUniformResourceIndex(mesh.uvOffset + idx.z)];
+        float2 uva = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.x)];
+        float2 uvb = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.y)];
+        float2 uvc = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.z)];
         uv = (1.f - attrib.bary.x - attrib.bary.y) * uva
             + attrib.bary.x * uvb + attrib.bary.y * uvc;
     }
@@ -409,4 +426,5 @@ void ClosestHit_GlobalBuffers(inout HitInfo payload, Attributes attrib) {
     float3x3 inv_transp = float3x3(WorldToObject4x3()[0], WorldToObject4x3()[1], WorldToObject4x3()[2]);
     payload.normal = float4(normalize(mul(inv_transp, n)), mesh.material_id);
 }
+
 
