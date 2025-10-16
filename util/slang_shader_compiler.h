@@ -117,6 +117,22 @@ public:
     );
     
     /**
+     * Compile Slang to SPIRV Library (for Vulkan RT - multiple entry points)
+     * This compiles the entire shader library as a single SPIRV collection
+     * Each entry point is compiled separately and returned as individual blobs
+     * 
+     * @param source Slang shader source code containing multiple entry points
+     * @param searchPaths Directories to search for #include files (optional)
+     * @param defines Preprocessor defines (optional)
+     * @return Vector of compiled shader blobs (one per entry point) or nullopt on failure
+     */
+    std::optional<std::vector<ShaderBlob>> compileSlangToSPIRVLibrary(
+        const std::string& source,
+        const std::vector<std::string>& searchPaths = {},
+        const std::vector<std::string>& defines = {}
+    );
+    
+    /**
      * Compile GLSL to SPIRV (for Vulkan)
      * @param source GLSL shader source code
      * @param entryPoint Entry point function name

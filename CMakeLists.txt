@@ -108,9 +108,12 @@ endif()
 
 if(ENABLE_SLANG)
     # List of Slang shader files to deploy
-    set(SLANG_SHADER_FILES
-        minimal_rt.slang
-    )
+    set(SLANG_SHADER_FILES)
+    
+    # Add unified shader if any Slang backend is enabled
+    if(ENABLE_DXR_SLANG OR ENABLE_VULKAN_SLANG)
+        list(APPEND SLANG_SHADER_FILES minimal_rt.slang)
+    endif()
     
     # Create shaders directory in output
     add_custom_command(TARGET chameleonrt POST_BUILD

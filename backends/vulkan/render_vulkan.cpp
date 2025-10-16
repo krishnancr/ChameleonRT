@@ -5,7 +5,14 @@
 #include <iostream>
 #include <numeric>
 #include <string>
+#ifndef USE_SLANG_COMPILER
 #include "spv_shaders_embedded_spv.h"
+#endif
+#ifdef USE_SLANG_COMPILER
+#include "../../util/slang_shader_compiler.h"
+#include <fstream>
+#include <filesystem>
+#endif
 #include "util.h"
 #include "mesh.h"  // For MeshDesc structure
 #include <glm/ext.hpp>
@@ -883,7 +890,64 @@ void RenderVulkan::build_raytracing_pipeline()
     CHECK_VULKAN(vkCreatePipelineLayout(
         device->logical_device(), &pipeline_create_info, nullptr, &pipeline_layout));
 
-    // Load the shader modules for our pipeline and build the pipeline
+#ifdef USE_SLANG_COMPILER
+    // Phase 1.4: Load and compile Slang RT shaders
+    std::cout << "=== Phase 1.4: Building RT Pipeline with Slang Shaders (Vulkan) ===" << std::endl;
+    
+    chameleonrt::SlangShaderCompiler slangCompiler;
+    if (!slangCompiler.isValid()) {
+        throw std::runtime_error("Failed to initialize Slang shader compiler");
+    }
+    
+    // Load unified Slang shader source with Vulkan bindings
+    auto shaderSource = chameleonrt::SlangShaderCompiler::loadShaderSource("shaders/minimal_rt.slang");
+    if (!shaderSource) {
+        throw std::runtime_error("Failed to load minimal_rt.slang (unified shader)");
+    }
+    
+    // Compile to SPIRV library with VULKAN define for binding selection
+    auto result = slangCompiler.compileSlangToSPIRVLibrary(*shaderSource, {}, {"VULKAN"});
+    if (!result) {
+        throw std::runtime_error("Failed to compile Slang shader to SPIRV: " + slangCompiler.getLastError());
+    }
+    
+    std::cout << "Successfully compiled " << result->size() << " SPIRV entry points from Slang" << std::endl;
+    
+    // Create shader modules from compiled SPIRV
+    std::shared_ptr<vkrt::ShaderModule> raygen_shader, miss_shader, occlusion_miss_shader, closest_hit_shader;
+    
+    for (const auto& blob : *result) {
+        std::cout << "Processing entry point: " << blob.entryPoint 
+                  << " (size: " << blob.bytecode.size() << " bytes)" << std::endl;
+        
+        // Validate SPIRV size alignment
+        if (blob.bytecode.size() % 4 != 0) {
+            std::cerr << "ERROR: SPIRV size " << blob.bytecode.size() 
+                      << " is not aligned to 4-byte boundary for " << blob.entryPoint << std::endl;
+            throw std::runtime_error("Invalid SPIRV alignment from Slang compiler");
+        }
+        
+        // SPIRV must be 4-byte aligned - convert byte array to uint32_t array
+        const uint32_t* spirv_code = reinterpret_cast<const uint32_t*>(blob.bytecode.data());
+        size_t spirv_size_bytes = blob.bytecode.size();
+        
+        if (blob.entryPoint == "RayGen") {
+            raygen_shader = std::make_shared<vkrt::ShaderModule>(*device, spirv_code, spirv_size_bytes);
+        } else if (blob.entryPoint == "Miss") {
+            miss_shader = std::make_shared<vkrt::ShaderModule>(*device, spirv_code, spirv_size_bytes);
+        } else if (blob.entryPoint == "ShadowMiss") {
+            occlusion_miss_shader = std::make_shared<vkrt::ShaderModule>(*device, spirv_code, spirv_size_bytes);
+        } else if (blob.entryPoint == "ClosestHit") {
+            closest_hit_shader = std::make_shared<vkrt::ShaderModule>(*device, spirv_code, spirv_size_bytes);
+        }
+    }
+    
+    // Verify all shaders were compiled
+    if (!raygen_shader || !miss_shader || !occlusion_miss_shader || !closest_hit_shader) {
+        throw std::runtime_error("Failed to compile all required Slang RT entry points");
+    }
+#else
+    // Original embedded SPIRV path
     auto raygen_shader =
         std::make_shared<vkrt::ShaderModule>(*device, raygen_spv, sizeof(raygen_spv));
 
@@ -894,6 +958,7 @@ void RenderVulkan::build_raytracing_pipeline()
 
     auto closest_hit_shader =
         std::make_shared<vkrt::ShaderModule>(*device, hit_spv, sizeof(hit_spv));
+#endif
 
     rt_pipeline = vkrt::RTPipelineBuilder()
                       .set_raygen("raygen", raygen_shader)

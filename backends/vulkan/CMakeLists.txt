@@ -15,13 +15,20 @@ if (REPORT_RAY_STATS)
 	set(GLSL_COMPILE_DEFNS "REPORT_RAY_STATS=1")
 endif()
 
-add_spirv_embed_library(spv_shaders raygen.rgen miss.rmiss hit.rchit
-    occlusion_miss.rmiss
-	COMPILE_OPTIONS -O
-    INCLUDE_DIRECTORIES
-        ${PROJECT_SOURCE_DIR}
-    COMPILE_DEFINITIONS
-        ${GLSL_COMPILE_DEFNS})
+# Only create embedded SPIRV shaders if we're NOT using Slang
+# When using Slang, shaders are compiled at runtime from .slang files
+if(NOT ENABLE_SLANG)
+    add_spirv_embed_library(spv_shaders raygen.rgen miss.rmiss hit.rchit
+        occlusion_miss.rmiss
+        COMPILE_OPTIONS -O
+        INCLUDE_DIRECTORIES
+            ${PROJECT_SOURCE_DIR}
+        COMPILE_DEFINITIONS
+            ${GLSL_COMPILE_DEFNS})
+else()
+    # Create empty library when using Slang (to satisfy linker dependencies)
+    add_library(spv_shaders INTERFACE)
+endif()
 
 add_library(crt_vulkan MODULE
     render_vulkan_plugin.cpp

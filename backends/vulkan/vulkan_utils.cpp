@@ -350,6 +350,10 @@ void Device::make_logical_device(const std::vector<std::string> &extensions)
     VkPhysicalDeviceFeatures2 device_features = {};
     device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     device_features.pNext = &rt_pipeline_features;
+    
+    // Enable storage image features required for Slang-generated SPIRV
+    device_features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
+    device_features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
     std::vector<const char *> device_extensions = {
         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,

@@ -1,14 +1,30 @@
-// Minimal ray tracing shader - based on working Slang examples
-// This shader is designed for Phase 1.3 Slang integration testing
+// Unified minimal ray tracing shader - works for both DXR and Vulkan
+// This shader is designed for Phase 1 Slang integration testing
+// Uses preprocessor guards to handle binding differences between APIs
 
 // Ray tracing acceleration structure
+#ifdef VULKAN
+[[vk::binding(0, 0)]]
+RaytracingAccelerationStructure scene;
+#else // DXR
 RaytracingAccelerationStructure scene : register(t0);
+#endif
 
 // Output texture  
+#ifdef VULKAN
+[[vk::binding(1, 0)]]
+RWTexture2D<float4> outputTexture;
+#else // DXR
 RWTexture2D<float4> outputTexture : register(u0);
+#endif
 
 // Simple camera parameters
+#ifdef VULKAN
+[[vk::binding(3, 0)]]
+cbuffer ViewParams
+#else // DXR
 cbuffer ViewParams : register(b0)
+#endif
 {
     float4 cam_pos;
     float4 cam_du;  
