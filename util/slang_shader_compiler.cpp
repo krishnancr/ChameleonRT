@@ -2,6 +2,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <filesystem>
 
 namespace chameleonrt {
 
@@ -15,6 +16,60 @@ SlangShaderCompiler::SlangShaderCompiler() {
     if (SLANG_FAILED(result)) {
         lastError = "Failed to create Slang global session";
         std::cerr << "ERROR: " << lastError << std::endl;
+        return;
+    }
+    
+    // Configure DXC compiler path for DXIL signing support
+    // Use the same Windows SDK discovery logic as CMake
+    std::vector<std::string> sdkVersions = {
+        "10.0.26100.0",
+        "10.0.22621.0", 
+        "10.0.22000.0",
+        "10.0.20348.0",
+        "10.0.19041.0",
+        "10.0.18362.0",
+        "10.0.17763.0"
+    };
+    
+    bool dxcFound = false;
+    for (const auto& sdkVersion : sdkVersions) {
+        std::string dxcBinDir = "C:/Program Files (x86)/Windows Kits/10/bin/" + sdkVersion + "/x64";
+        std::string dxcExePath = dxcBinDir + "/dxc.exe";
+        std::ifstream dxcFile(dxcExePath);
+        if (dxcFile.good()) {
+            // Pass the bin directory, not the executable path
+            std::filesystem::path absoluteDxcBinDir = std::filesystem::absolute(dxcBinDir);
+            globalSession->setDownstreamCompilerPath(SLANG_PASS_THROUGH_DXC, absoluteDxcBinDir.string().c_str());
+            std::cout << "Slang configured to use DXC bin directory: " << absoluteDxcBinDir << std::endl;
+            dxcFound = true;
+            break;
+        }
+    }
+    
+    if (!dxcFound) {
+        // Fallback: try to find dxc.exe in build directory (in case it was manually copied)
+        std::vector<std::string> fallbackPaths = {
+            ".",                                 // Current directory
+            "build/Debug",                       // Build directory from project root
+            "build/Release"                      // Release build
+        };
+        
+        for (const auto& dir : fallbackPaths) {
+            std::string dxcExePath = dir + std::string("/dxc.exe");
+            std::ifstream dxcFile(dxcExePath);
+            if (dxcFile.good()) {
+                std::filesystem::path absoluteDxcDir = std::filesystem::absolute(dir);
+                globalSession->setDownstreamCompilerPath(SLANG_PASS_THROUGH_DXC, absoluteDxcDir.string().c_str());
+                std::cout << "Slang configured to use DXC bin directory (fallback): " << absoluteDxcDir << std::endl;
+                dxcFound = true;
+                break;
+            }
+        }
+    }
+    
+    if (!dxcFound) {
+        std::cout << "Warning: dxc.exe not found - Slang DXIL compilation will fail" << std::endl;
+        std::cout << "Please install Windows 10 SDK or copy dxc.exe to build directory" << std::endl;
     }
 }
 
@@ -24,6 +79,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileHLSLToDXIL(
     const std::string& source,
     const std::string& entryPoint,
     ShaderStage stage,
+    const std::vector<std::string>& searchPaths,
     const std::vector<std::string>& defines
 ) {
     return compileInternal(
@@ -31,7 +87,8 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileHLSLToDXIL(
         entryPoint, 
         stage, 
         SLANG_SOURCE_LANGUAGE_HLSL, 
-        SLANG_DXIL, 
+        SLANG_DXIL,
+        searchPaths,
         defines
     );
 }
@@ -40,6 +97,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileGLSLToSPIRV(
     const std::string& source,
     const std::string& entryPoint,
     ShaderStage stage,
+    const std::vector<std::string>& searchPaths,
     const std::vector<std::string>& defines
 ) {
     return compileInternal(
@@ -48,6 +106,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileGLSLToSPIRV(
         stage,
         SLANG_SOURCE_LANGUAGE_GLSL,
         SLANG_SPIRV,
+        searchPaths,
         defines
     );
 }
@@ -226,10 +285,176 @@ std::optional<std::vector<ShaderBlob>> SlangShaderCompiler::compileHLSLToDXILLib
     return entryPointBlobs;
 }
 
+std::optional<std::vector<ShaderBlob>> SlangShaderCompiler::compileSlangToDXILLibrary(
+    const std::string& source,
+    const std::vector<std::string>& searchPaths,
+    const std::vector<std::string>& defines
+) {
+    if (!globalSession) {
+        lastError = "Global session not initialized";
+        std::cerr << "[Slang] ERROR: " << lastError << std::endl;
+        return std::nullopt;
+    }
+    
+    // Create session description for DXIL library compilation
+    slang::SessionDesc sessionDesc = {};
+    slang::TargetDesc targetDesc = {};
+    targetDesc.format = SLANG_DXIL;
+    
+    // Use lib_6_6 profile for ray tracing library compilation
+    targetDesc.profile = globalSession->findProfile("lib_6_6");
+    
+    sessionDesc.targets = &targetDesc;
+    sessionDesc.targetCount = 1;
+    
+    // DO NOT use searchPaths - this was the root cause of DXIL signing issues
+    
+    // Create session for this compilation
+    Slang::ComPtr<slang::ISession> compileSession;
+    SlangResult result = globalSession->createSession(sessionDesc, compileSession.writeRef());
+    if (SLANG_FAILED(result)) {
+        lastError = "Failed to create Slang session";
+        std::cerr << "[Slang] ERROR: " << lastError << std::endl;
+        return std::nullopt;
+    }
+
+    // Load source as Slang module
+    Slang::ComPtr<slang::IBlob> diagnosticsBlob;
+    Slang::ComPtr<slang::IModule> module;
+    module = compileSession->loadModuleFromSourceString(
+        "shader",
+        "shader.slang",
+        source.c_str(),
+        diagnosticsBlob.writeRef()
+    );
+
+    if (!module) {
+        lastError = "Slang module compilation failed";
+        std::cerr << "[Slang] ERROR: " << lastError << std::endl;
+        if (diagnosticsBlob) {
+            std::cerr << "[Slang] Diagnostics:\n" 
+                      << (const char*)diagnosticsBlob->getBufferPointer() << std::endl;
+        }
+        return std::nullopt;
+    }
+    
+    // Find all DXR entry points
+    struct EntryPointInfo {
+        std::string name;
+        ShaderStage stage;
+    };
+    
+    std::vector<EntryPointInfo> entryPointInfos;
+    entryPointInfos.push_back({"RayGen", ShaderStage::RayGen});
+    entryPointInfos.push_back({"Miss", ShaderStage::Miss});
+    entryPointInfos.push_back({"ShadowMiss", ShaderStage::Miss});
+    entryPointInfos.push_back({"ClosestHit", ShaderStage::ClosestHit});
+    
+    // Find and collect all entry points
+    std::vector<Slang::ComPtr<slang::IEntryPoint>> entryPointObjs;
+    std::vector<slang::IComponentType*> componentTypes;
+    componentTypes.push_back(module.get());
+    
+    for (const auto& epInfo : entryPointInfos) {
+        Slang::ComPtr<slang::IEntryPoint> ep;
+        SlangResult findResult = module->findEntryPointByName(epInfo.name.c_str(), ep.writeRef());
+        if (SLANG_FAILED(findResult)) {
+            std::cerr << "[Slang] Warning: Entry point '" << epInfo.name << "' not found" << std::endl;
+        } else {
+            entryPointObjs.push_back(ep);
+            componentTypes.push_back(ep.get());
+        }
+    }
+    
+    if (entryPointObjs.empty()) {
+        lastError = "No entry points found in Slang shader";
+        std::cerr << "[Slang] ERROR: " << lastError << std::endl;
+        return std::nullopt;
+    }
+    
+    // Create composite with module + entry points
+    Slang::ComPtr<slang::IComponentType> compositeProgram;
+    SlangResult linkResult = compileSession->createCompositeComponentType(
+        componentTypes.data(),
+        (SlangInt)componentTypes.size(),
+        compositeProgram.writeRef(),
+        diagnosticsBlob.writeRef()
+    );
+    
+    if (SLANG_FAILED(linkResult)) {
+        lastError = "Failed to create composite";
+        std::cerr << "[Slang] ERROR: " << lastError << std::endl;
+        if (diagnosticsBlob) {
+            std::cerr << "[Slang] Diagnostics:\n"
+                      << (const char*)diagnosticsBlob->getBufferPointer() << std::endl;
+        }
+        return std::nullopt;
+    }
+
+    // Link the composite (required before code generation)
+    Slang::ComPtr<slang::IComponentType> linkedProgram;
+    SlangResult linkResult2 = compositeProgram->link(linkedProgram.writeRef(), diagnosticsBlob.writeRef());
+    
+    if (SLANG_FAILED(linkResult2)) {
+        lastError = "Failed to link composite";
+        std::cerr << "[Slang] ERROR: " << lastError << std::endl;
+        if (diagnosticsBlob) {
+            std::cerr << "[Slang] Diagnostics:\n"
+                      << (const char*)diagnosticsBlob->getBufferPointer() << std::endl;
+        }
+        return std::nullopt;
+    }
+    
+    // Compile each entry point separately
+    std::vector<ShaderBlob> entryPointBlobs;
+    for (size_t i = 0; i < entryPointObjs.size(); ++i) {
+        Slang::ComPtr<slang::IBlob> entryPointCode;
+        Slang::ComPtr<slang::IBlob> entryPointDiagnostics;
+        
+        SlangResult codeResult = linkedProgram->getEntryPointCode(
+            (SlangInt)i,
+            0,
+            entryPointCode.writeRef(),
+            entryPointDiagnostics.writeRef()
+        );
+        
+        if (SLANG_FAILED(codeResult)) {
+            lastError = "Entry point code generation failed for entry point " + std::to_string(i);
+            std::cerr << "[Slang] ERROR: " << lastError << std::endl;
+            if (entryPointDiagnostics) {
+                std::cerr << "[Slang] Diagnostics:\n"
+                          << (const char*)entryPointDiagnostics->getBufferPointer() << std::endl;
+            }
+            return std::nullopt;
+        }
+        
+        if (!entryPointCode) {
+            lastError = "Entry point code is null for entry point " + std::to_string(i);
+            std::cerr << "[Slang] ERROR: " << lastError << std::endl;
+            return std::nullopt;
+        }
+
+        // Build result for this entry point
+        ShaderBlob shaderBlob;
+        shaderBlob.target = ShaderTarget::DXIL;
+        shaderBlob.entryPoint = entryPointInfos[i].name;
+        shaderBlob.stage = entryPointInfos[i].stage;
+        
+        const uint8_t* codeData = (const uint8_t*)entryPointCode->getBufferPointer();
+        size_t codeSize = entryPointCode->getBufferSize();
+        shaderBlob.bytecode.assign(codeData, codeData + codeSize);
+        
+        entryPointBlobs.push_back(std::move(shaderBlob));
+    }
+
+    return entryPointBlobs;
+}
+
 std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToDXIL(
     const std::string& source,
     const std::string& entryPoint,
     ShaderStage stage,
+    const std::vector<std::string>& searchPaths,
     const std::vector<std::string>& defines
 ) {
     return compileInternal(
@@ -238,6 +463,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToDXIL(
         stage,
         SLANG_SOURCE_LANGUAGE_SLANG,
         SLANG_DXIL,
+        searchPaths,
         defines
     );
 }
@@ -246,6 +472,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToSPIRV(
     const std::string& source,
     const std::string& entryPoint,
     ShaderStage stage,
+    const std::vector<std::string>& searchPaths,
     const std::vector<std::string>& defines
 ) {
     return compileInternal(
@@ -254,6 +481,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToSPIRV(
         stage,
         SLANG_SOURCE_LANGUAGE_SLANG,
         SLANG_SPIRV,
+        searchPaths,
         defines
     );
 }
@@ -262,6 +490,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToMetal(
     const std::string& source,
     const std::string& entryPoint,
     ShaderStage stage,
+    const std::vector<std::string>& searchPaths,
     const std::vector<std::string>& defines
 ) {
     return compileInternal(
@@ -270,6 +499,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToMetal(
         stage,
         SLANG_SOURCE_LANGUAGE_SLANG,
         SLANG_METAL,
+        searchPaths,
         defines
     );
 }
@@ -280,6 +510,7 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileInternal(
     ShaderStage stage,
     SlangSourceLanguage sourceLanguage,
     SlangCompileTarget targetFormat,
+    const std::vector<std::string>& searchPaths,
     const std::vector<std::string>& defines
 ) {
     if (!globalSession) {
@@ -303,8 +534,16 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileInternal(
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
     
-    // Set search paths for #include directives (if needed)
-    // sessionDesc.searchPaths = ...;
+    // Add search paths for #include resolution (if provided)
+    std::vector<const char*> searchPathPtrs;
+    if (!searchPaths.empty()) {
+        searchPathPtrs.reserve(searchPaths.size());
+        for (const auto& path : searchPaths) {
+            searchPathPtrs.push_back(path.c_str());
+        }
+        sessionDesc.searchPaths = searchPathPtrs.data();
+        sessionDesc.searchPathCount = (SlangInt)searchPathPtrs.size();
+    }
     
     // Create session
     Slang::ComPtr<slang::ISession> session;
@@ -348,9 +587,13 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileInternal(
         if (diagnostics) {
             const char* diagText = (const char*)diagnostics->getBufferPointer();
             if (diagText && strlen(diagText) > 0) {
-                lastError = std::string("Slang compilation diagnostics:\n") + diagText;
-                std::cerr << lastError << std::endl;
+                std::string diagStr = std::string("Slang compilation diagnostics:\n") + diagText;
+                lastError = diagStr;
+                std::cerr << "[SlangShaderCompiler] " << diagStr << std::endl;
                 if (!module) {
+                    std::cerr << "[SlangShaderCompiler] Module compilation FAILED for entry point: " << entryPoint << std::endl;
+                    std::cerr << "[SlangShaderCompiler] Source language: " << (sourceLanguage == SLANG_SOURCE_LANGUAGE_SLANG ? "Slang" : "HLSL") << std::endl;
+                    std::cerr << "[SlangShaderCompiler] Target format: " << (targetFormat == SLANG_DXIL ? "DXIL" : "Other") << std::endl;
                     return std::nullopt;
                 }
             }
@@ -409,8 +652,9 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileInternal(
                 lastError = "Failed to find entry point: " + entryPoint;
             }
         } else {
-            lastError = "Failed to find entry point: " + entryPoint;
+            lastError = "Failed to find entry point: " + entryPoint + " (check [shader(\"...\")] attribute)";
         }
+        std::cerr << "[SlangShaderCompiler] " << lastError << std::endl;
         return std::nullopt;
     }
     
@@ -453,6 +697,9 @@ std::optional<ShaderBlob> SlangShaderCompiler::compileInternal(
         } else {
             lastError = "Failed to generate target code";
         }
+        std::cerr << "[SlangShaderCompiler] " << lastError << std::endl;
+        std::cerr << "[SlangShaderCompiler] Entry point: " << entryPoint << std::endl;
+        std::cerr << "[SlangShaderCompiler] Target format: " << (targetFormat == SLANG_DXIL ? "DXIL" : "Other") << std::endl;
         return std::nullopt;
     }
     
@@ -509,6 +756,8 @@ SlangStage SlangShaderCompiler::toSlangStage(ShaderStage stage) {
             return SLANG_STAGE_INTERSECTION;
         case ShaderStage::Callable:
             return SLANG_STAGE_CALLABLE;
+        case ShaderStage::Library:
+            return SLANG_STAGE_NONE;  // Library doesn't have a specific stage
         default:
             return SLANG_STAGE_NONE;
     }

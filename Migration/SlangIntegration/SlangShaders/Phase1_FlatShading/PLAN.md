@@ -1,6 +1,6 @@
 # Phase 1: Flat Shading - Detailed Plan
 
-**Status:** 📋 Planning  
+**Status:** � IN PROGRESS - Phase 1.3 Complete  
 **Duration:** 3-5 days  
 **Risk Level:** MEDIUM
 
@@ -67,6 +67,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID)
    assert(dxilBlob.has_value());
    std::cout << "DXIL size: " << dxilBlob->bytecode.size() << " bytes\n";
    ```
+   This compilation needs to happen only if USE_SLANG_COMPILER is set to ON with build time Cmake variables
 
 3. **Compile to SPIRV** (15 min)
    ```cpp
@@ -76,6 +77,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID)
    assert(spirvBlob.has_value());
    std::cout << "SPIRV size: " << spirvBlob->bytecode.size() << " bytes\n";
    ```
+    This compilation needs to happen only if USE_SLANG_COMPILER is set to ON with build time Cmake variables
 
 4. **Compare with native compilers** (30 min)
    - Compile same shader with DXC: `dxc -T cs_6_5 -E computeMain test.hlsl`
@@ -83,6 +85,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID)
    - Compare bytecode sizes (should be similar, within 10%)
 
 5. **Check reflection** (15 min)
+    Note that we're not using the reflections API , but manually binding a UAV to u0
    - Verify `outputTexture` appears in bindings
    - Should be: `u0, space0` (UAV register 0)
 
@@ -265,6 +268,7 @@ void ShadowMiss(inout ShadowPayload payload)
 ## Phase 1.3: DXR Pipeline Integration
 
 **Duration:** 1-2 days  
+**Status:** ✅ COMPLETE  
 **Goal:** Create D3D12 RT pipeline using Slang shaders, render barycentric-colored mesh
 
 ### Architecture

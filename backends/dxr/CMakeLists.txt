@@ -23,14 +23,21 @@ if (REPORT_RAY_STATS)
 	set(HLSL_COMPILE_DEFNS "REPORT_RAY_STATS=1")
 endif()
 
-add_dxil_embed_library(dxr_shaders render_dxr.hlsl util.hlsl
-	disney_bsdf.hlsl lcg_rng.hlsl
-	COMPILE_OPTIONS -O3
-	COMPILE_DEFINITIONS
-        ${HLSL_COMPILE_DEFNS}
-	INCLUDE_DIRECTORIES
-        ${CMAKE_CURRENT_LIST_DIR}
-        ${PROJECT_SOURCE_DIR})
+# Only create embedded HLSL shaders if we're NOT using Slang
+# When using Slang, shaders are compiled at runtime from .slang files
+if(NOT ENABLE_SLANG)
+    add_dxil_embed_library(dxr_shaders render_dxr.hlsl util.hlsl
+        disney_bsdf.hlsl lcg_rng.hlsl
+        COMPILE_OPTIONS -O3
+        COMPILE_DEFINITIONS
+            ${HLSL_COMPILE_DEFNS}
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_LIST_DIR}
+            ${PROJECT_SOURCE_DIR})
+else()
+    # Create empty library when using Slang (to satisfy linker dependencies)
+    add_library(dxr_shaders INTERFACE)
+endif()
 
 add_library(crt_dxr MODULE
     render_dxr_plugin.cpp
@@ -103,33 +110,41 @@ if(ENABLE_DXR_SLANG)
             message(WARNING "Please install Windows 10 SDK or manually copy dxcompiler.dll and dxil.dll to output directory")
         endif()
         
-        # Copy shader source files to output directory for runtime compilation
-        set(SHADER_FILES
-            render_dxr.hlsl
-            util.hlsl
-            disney_bsdf.hlsl
-            lcg_rng.hlsl
-            lights.hlsl
-        )
-        
-        foreach(SHADER_FILE ${SHADER_FILES})
-            add_custom_command(TARGET crt_dxr POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE}"
-                    "$<TARGET_FILE_DIR:crt_dxr>/${SHADER_FILE}"
-                COMMENT "Deploying ${SHADER_FILE} for runtime Slang compilation"
+        # Only copy HLSL shader files if we're NOT using native Slang shaders
+        # When ENABLE_SLANG is ON, we use .slang files instead of .hlsl files
+        if(NOT ENABLE_SLANG)
+            # Copy shader source files to output directory for runtime compilation
+            set(SHADER_FILES
+                render_dxr.hlsl
+                util.hlsl
+                disney_bsdf.hlsl
+                lcg_rng.hlsl
+                lights.hlsl
             )
-        endforeach()
-        
-        # Copy utility header from util directory (for #include "util/texture_channel_mask.h")
-        add_custom_command(TARGET crt_dxr POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:crt_dxr>/util"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${PROJECT_SOURCE_DIR}/util/texture_channel_mask.h"
-                "$<TARGET_FILE_DIR:crt_dxr>/util/texture_channel_mask.h"
-            COMMENT "Deploying util/texture_channel_mask.h for runtime Slang compilation"
-        )
+            
+            foreach(SHADER_FILE ${SHADER_FILES})
+                add_custom_command(TARGET crt_dxr POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE}"
+                        "$<TARGET_FILE_DIR:crt_dxr>/${SHADER_FILE}"
+                    COMMENT "Deploying ${SHADER_FILE} for runtime HLSL compilation"
+                )
+            endforeach()
+            
+            # Copy utility header from util directory (for #include "util/texture_channel_mask.h")
+            add_custom_command(TARGET crt_dxr POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "$<TARGET_FILE_DIR:crt_dxr>/util"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${PROJECT_SOURCE_DIR}/util/texture_channel_mask.h"
+                    "$<TARGET_FILE_DIR:crt_dxr>/util/texture_channel_mask.h"
+                COMMENT "Deploying util/texture_channel_mask.h for runtime HLSL compilation"
+            )
+            
+            message(STATUS "HLSL shader files will be deployed to output directory")
+        else()
+            message(STATUS "Skipping HLSL shader deployment - using native Slang shaders instead")
+        endif()
         
         message(STATUS "Shader files will be deployed to output directory")
     endif()

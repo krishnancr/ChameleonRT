@@ -26,7 +26,8 @@ enum class ShaderStage {
     AnyHit,
     Miss,
     Intersection,
-    Callable
+    Callable,
+    Library      // For shader libraries containing multiple entry points
 };
 
 // Compilation result
@@ -74,6 +75,7 @@ public:
      * @param source HLSL shader source code
      * @param entryPoint Entry point function name
      * @param stage Shader stage (vertex, fragment, raygen, etc.)
+     * @param searchPaths Directories to search for #include files (optional)
      * @param defines Preprocessor defines (optional)
      * @return Compiled shader blob or nullopt on failure
      */
@@ -81,6 +83,7 @@ public:
         const std::string& source,
         const std::string& entryPoint,
         ShaderStage stage,
+        const std::vector<std::string>& searchPaths = {},
         const std::vector<std::string>& defines = {}
     );
     
@@ -100,10 +103,25 @@ public:
     );
     
     /**
+     * Compile Slang to DXIL Library (for DXR - multiple entry points)
+     * This compiles the entire shader library as a single DXIL library
+     * @param source Slang shader source code with multiple entry points
+     * @param searchPaths Directories to search for #include files (optional)
+     * @param defines Preprocessor defines (optional)
+     * @return Vector of compiled shader blobs (single library blob) or nullopt on failure
+     */
+    std::optional<std::vector<ShaderBlob>> compileSlangToDXILLibrary(
+        const std::string& source,
+        const std::vector<std::string>& searchPaths = {},
+        const std::vector<std::string>& defines = {}
+    );
+    
+    /**
      * Compile GLSL to SPIRV (for Vulkan)
      * @param source GLSL shader source code
      * @param entryPoint Entry point function name
      * @param stage Shader stage
+     * @param searchPaths Directories to search for #include files (optional)
      * @param defines Preprocessor defines (optional)
      * @return Compiled shader blob or nullopt on failure
      */
@@ -111,6 +129,7 @@ public:
         const std::string& source,
         const std::string& entryPoint,
         ShaderStage stage,
+        const std::vector<std::string>& searchPaths = {},
         const std::vector<std::string>& defines = {}
     );
     
@@ -121,6 +140,7 @@ public:
      * @param source Slang shader source code
      * @param entryPoint Entry point function name
      * @param stage Shader stage
+     * @param searchPaths Directories to search for #include files (optional)
      * @param defines Preprocessor defines (optional)
      * @return Compiled shader blob or nullopt on failure
      */
@@ -128,6 +148,7 @@ public:
         const std::string& source,
         const std::string& entryPoint,
         ShaderStage stage,
+        const std::vector<std::string>& searchPaths = {},
         const std::vector<std::string>& defines = {}
     );
     
@@ -136,6 +157,7 @@ public:
      * @param source Slang shader source code
      * @param entryPoint Entry point function name
      * @param stage Shader stage
+     * @param searchPaths Directories to search for #include files (optional)
      * @param defines Preprocessor defines (optional)
      * @return Compiled shader blob or nullopt on failure
      */
@@ -143,6 +165,7 @@ public:
         const std::string& source,
         const std::string& entryPoint,
         ShaderStage stage,
+        const std::vector<std::string>& searchPaths = {},
         const std::vector<std::string>& defines = {}
     );
     
@@ -151,6 +174,7 @@ public:
      * @param source Slang shader source code
      * @param entryPoint Entry point function name
      * @param stage Shader stage
+     * @param searchPaths Directories to search for #include files (optional)
      * @param defines Preprocessor defines (optional)
      * @return Compiled shader blob or nullopt on failure
      */
@@ -158,6 +182,7 @@ public:
         const std::string& source,
         const std::string& entryPoint,
         ShaderStage stage,
+        const std::vector<std::string>& searchPaths = {},
         const std::vector<std::string>& defines = {}
     );
     
@@ -196,6 +221,7 @@ private:
         ShaderStage stage,
         SlangSourceLanguage sourceLanguage,
         SlangCompileTarget targetFormat,
+        const std::vector<std::string>& searchPaths,
         const std::vector<std::string>& defines
     );
     

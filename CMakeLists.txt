@@ -102,6 +102,41 @@ if(WIN32 AND ENABLE_SLANG)
     )
 endif()
 
+# ============================================================================
+# Slang Shader Deployment
+# ============================================================================
+
+if(ENABLE_SLANG)
+    # List of Slang shader files to deploy
+    set(SLANG_SHADER_FILES
+        minimal_rt.slang
+    )
+    
+    # Create shaders directory in output
+    add_custom_command(TARGET chameleonrt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:chameleonrt>/shaders"
+        COMMENT "Creating shaders directory in output"
+    )
+    
+    # Copy each Slang shader file to the output directory
+    foreach(SHADER_FILE ${SLANG_SHADER_FILES})
+        # Check if source shader file exists
+        if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/${SHADER_FILE}")
+            add_custom_command(TARGET chameleonrt POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_SOURCE_DIR}/shaders/${SHADER_FILE}"
+                    "$<TARGET_FILE_DIR:chameleonrt>/shaders/"
+                COMMENT "Copying ${SHADER_FILE} to output directory"
+            )
+        else()
+            message(WARNING "Slang shader file not found: ${CMAKE_SOURCE_DIR}/shaders/${SHADER_FILE}")
+        endif()
+    endforeach()
+    
+    message(STATUS "Slang shader deployment configured for ${CMAKE_BUILD_TYPE} builds")
+endif()
+
 install(TARGETS chameleonrt
         RUNTIME DESTINATION bin)
 

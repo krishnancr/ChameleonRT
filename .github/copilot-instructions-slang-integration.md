@@ -1,5 +1,18 @@
 # Slang Integration - Task-Specific Instructions
 
+## IMPORTANT: Documentation Policy
+
+**DO NOT create documentation files unless explicitly requested.**
+
+When responding to user questions:
+- ✅ Answer directly with code, explanations, or analysis
+- ✅ Provide inline examples and snippets
+- ✅ Reference existing documentation
+- ❌ Do NOT create new `.md` files, `README.md`, `PLAN.md`, etc. unless the user specifically asks for them
+- ❌ Do NOT create "helpful" planning documents, summaries, or guides unprompted
+
+**The user will ask if they want documentation.** Focus on solving the immediate problem, not documenting everything.
+
 ## Current Mission
 
 Integrate **Slang shader compiler** into ChameleonRT's direct API backends (DXR and Vulkan) **without using slang-gfx abstraction layer**.
