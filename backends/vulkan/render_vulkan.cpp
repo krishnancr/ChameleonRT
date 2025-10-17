@@ -845,7 +845,8 @@ void RenderVulkan::build_raytracing_pipeline()
             .add_binding(
                 4, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
-                5, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+                5, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
 #ifdef REPORT_RAY_STATS
             .add_binding(
                 6, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
@@ -861,7 +862,10 @@ void RenderVulkan::build_raytracing_pipeline()
                 13, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
             .add_binding(
                 14, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
-            // Textures at binding 30 (single descriptor set architecture)
+            // Explicit sampler at binding 29 for Slang (must be before variable-count textures)
+            .add_binding(
+                29, 1, VK_DESCRIPTOR_TYPE_SAMPLER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+            // Textures at binding 30 (combined image samplers) - MUST BE LAST BINDING
             .add_binding(
                 30,
                 std::max(textures.size(), size_t(1)),
@@ -979,7 +983,8 @@ void RenderVulkan::build_shader_descriptor_table()
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},  // 2 existing + 5 global buffers
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             std::max(uint32_t(textures.size()), uint32_t(1))}}; // Moved from Set 1
+                             std::max(uint32_t(textures.size()), uint32_t(1))}, // Moved from Set 1
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1}};  // Explicit sampler at binding 31
 
     VkDescriptorPoolCreateInfo pool_create_info = {};
     pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1027,6 +1032,23 @@ void RenderVulkan::build_shader_descriptor_table()
         updater.write_combined_sampler_array(desc_set, 30, combined_samplers);
     }
     updater.update(*device);
+
+    // Write explicit sampler at binding 29 for Slang
+    {
+        VkDescriptorImageInfo sampler_info = {};
+        sampler_info.sampler = sampler;
+        
+        VkWriteDescriptorSet sampler_write = {};
+        sampler_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        sampler_write.dstSet = desc_set;
+        sampler_write.dstBinding = 29;
+        sampler_write.dstArrayElement = 0;
+        sampler_write.descriptorCount = 1;
+        sampler_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        sampler_write.pImageInfo = &sampler_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &sampler_write, 0, nullptr);
+    }
 
     // ============================================================================
     // Write global buffer descriptors

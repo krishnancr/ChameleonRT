@@ -14,8 +14,11 @@ RaytracingAccelerationStructure scene : register(t0);
 #ifdef VULKAN
 [[vk::binding(1, 0)]]
 RWTexture2D<float4> outputTexture;
+[[vk::binding(2, 0)]]  
+RWTexture2D<float4> accum_buffer;
 #else // DXR
 RWTexture2D<float4> outputTexture : register(u0);
+RWTexture2D<float4> accum_buffer : register(u1);
 #endif
 
 // Simple camera parameters
@@ -34,6 +37,47 @@ cbuffer ViewParams : register(b0)
     uint samples_per_pixel;
 }
 
+// Scene buffers (matches HLSL layout)
+#ifdef VULKAN
+[[vk::binding(4, 0)]]  // Vulkan: material_params is at binding 4 (mat_params in backend)
+StructuredBuffer<MaterialParams> material_params;
+#else // DXR
+StructuredBuffer<MaterialParams> material_params : register(t1);
+#endif
+
+// Textures and sampler (matches HLSL layout)
+#ifdef VULKAN
+[[vk::binding(29, 0)]]  // Vulkan: explicit sampler at binding 29 (before textures)
+SamplerState tex_sampler;
+[[vk::binding(30, 0)]]  // Vulkan: combined image samplers for textures (must be last binding)
+Texture2D textures[];
+#else // DXR
+// Unbounded texture array - moved to t30 to avoid conflict with global buffers at t10-t14
+Texture2D textures[] : register(t30, space0);
+SamplerState tex_sampler : register(s0);
+#endif
+
+// Texture channel mask macros (from texture_channel_mask.h)
+#define TEXTURED_PARAM_MASK 0x80000000
+#define IS_TEXTURED_PARAM(x) ((x) & 0x80000000)
+#define GET_TEXTURE_CHANNEL(x) (((x) >> 29) & 0x3)
+#define SET_TEXTURE_CHANNEL(x, c) x |= (c & 0x3) << 29
+#define GET_TEXTURE_ID(x) ((x) & 0x1fffffff)
+#define SET_TEXTURE_ID(x, i) (x |= i & 0x1fffffff)
+
+// Texture sampling function (matches HLSL implementation)
+float textured_scalar_param(const float x, in const float2 uv) {
+    const uint mask = asuint(x);
+    if (IS_TEXTURED_PARAM(mask)) {
+        const uint tex_id = GET_TEXTURE_ID(mask);
+        const uint channel = GET_TEXTURE_CHANNEL(mask);
+        return textures[NonUniformResourceIndex(tex_id)]
+            .SampleLevel(tex_sampler, uv, 0)[channel];
+        
+    }
+    return x;
+}
+
 // MeshDesc structure for per-mesh metadata (matches HLSL layout)
 struct MeshDesc {
     uint vbOffset;      // Offset into globalVertices
@@ -44,6 +88,26 @@ struct MeshDesc {
     uint num_uvs;       // Number of UVs for this mesh
     uint material_id;   // Material ID for this mesh
     uint pad;           // Padding to 32 bytes
+};
+
+// MaterialParams structure for material properties (matches HLSL layout)
+struct MaterialParams {
+    float3 base_color;
+    float metallic;
+
+    float specular;
+    float roughness;
+    float specular_tint;
+    float anisotropy;
+
+    float sheen;
+    float sheen_tint;
+    float clearcoat;
+    float clearcoat_gloss;
+
+    float ior;
+    float specular_transmission;
+    float2 pad;
 };
 
 // Global geometry buffers (matches HLSL layout at registers t10-t14)
@@ -66,16 +130,21 @@ StructuredBuffer<float2> globalUVs : register(t13, space0);
 StructuredBuffer<MeshDesc> meshDescs : register(t14, space0);
 #endif
 
-// Hit group data for mesh identification (matches HLSL b2)
+// Hit group data for mesh identification
 #ifdef VULKAN
-[[vk::binding(2, 0)]]
+// Vulkan uses vk::shader_record attribute for per-hit-group data (stored in SBT, not a descriptor)
+[[vk::shader_record]]
 cbuffer HitGroupData
+{
+    uint meshDescIndex;  // Index into global meshDescs buffer
+}
 #else // DXR
+// DXR uses constant buffer binding for hit group local root signature
 cbuffer HitGroupData : register(b2, space0)
-#endif
 {
     uint meshDescIndex;  // Index into meshDescs buffer
 }
+#endif
 
 // Primary ray payload (matches HLSL HitInfo structure)
 struct Payload
@@ -124,13 +193,27 @@ void RayGen()
         payload
     );
     
-    // Write result - Phase 2: Show UV coordinates as colors for verification
-    float3 display_color = payload.color_dist.rgb;  // Miss shader sets this to blue background
+    // Write result - Both DXR and Vulkan: Process materials in RayGen
+    float3 display_color = payload.color_dist.rgb;  // Miss shader background or UV
     if (payload.color_dist.w > 0) {
-        // Hit something - show UV coordinates as Red-Green colors
-        // Red = U coordinate, Green = V coordinate, Blue = 0
+        // Hit something - get material data and process textures  
+        uint material_id = uint(payload.normal.w);
         float2 uv = payload.color_dist.xy;
-        display_color = float3(uv.x, uv.y, 0.0);
+        
+        // Unified material processing for both backends
+        MaterialParams p = material_params[NonUniformResourceIndex(material_id)];
+        
+        // Sample base_color (either from texture or material parameter)
+        float3 base_color;
+        const uint mask = asuint(p.base_color.x);
+        if (IS_TEXTURED_PARAM(mask)) {
+            const uint tex_id = GET_TEXTURE_ID(mask);
+            base_color = textures[NonUniformResourceIndex(tex_id)]
+                .SampleLevel(tex_sampler, uv, 0).xyz;
+        } else {
+            base_color = p.base_color;
+        }
+        display_color = base_color;
     }
     outputTexture[pixel] = float4(display_color, 1.0);
 }
@@ -195,9 +278,8 @@ void ClosestHit(
             + attrib.barycentrics.x * uvb + attrib.barycentrics.y * uvc;
     }
 
+    // Both DXR and Vulkan: Return geometry data for material processing in RayGen
     payload.color_dist = float4(uv, 0, RayTCurrent());
-    // Note: WorldToObject4x3() transform will be added later when needed
-    // For now, just use geometric normal and material_id
     payload.normal = float4(n, mesh.material_id);
 }
 
