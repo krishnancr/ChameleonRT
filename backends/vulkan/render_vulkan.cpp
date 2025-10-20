@@ -686,36 +686,81 @@ void RenderVulkan::set_scene(const Scene &scene)
     if (!scene.global_vertices.empty()) {
         global_vertex_count = scene.global_vertices.size();
         
+#ifdef USE_SLANG_COMPILER
+        // Slang generates ArrayStride 16 for vec3, so pad to vec4
+        std::vector<glm::vec4> padded_vertices(global_vertex_count);
+        for (size_t i = 0; i < global_vertex_count; ++i) {
+            padded_vertices[i] = glm::vec4(scene.global_vertices[i], 0.0f);
+        }
+        upload_global_buffer(
+            global_vertex_buffer,
+            padded_vertices.data(),
+            padded_vertices.size() * sizeof(glm::vec4),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+#else
+        // GLSL uses scalar block layout with ArrayStride 12
         upload_global_buffer(
             global_vertex_buffer,
             scene.global_vertices.data(),
             scene.global_vertices.size() * sizeof(glm::vec3),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
+#endif
     }
     
     // 2. Global Index Buffer (uvec3 triangles)
     if (!scene.global_indices.empty()) {
         global_index_count = scene.global_indices.size();
         
+#ifdef USE_SLANG_COMPILER
+        // Slang generates ArrayStride 16 for uvec3, so pad to uvec4
+        std::vector<glm::uvec4> padded_indices(global_index_count);
+        for (size_t i = 0; i < global_index_count; ++i) {
+            padded_indices[i] = glm::uvec4(scene.global_indices[i], 0u);
+        }
+        upload_global_buffer(
+            global_index_buffer,
+            padded_indices.data(),
+            padded_indices.size() * sizeof(glm::uvec4),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+#else
+        // GLSL uses scalar block layout with ArrayStride 12
         upload_global_buffer(
             global_index_buffer,
             scene.global_indices.data(),
             scene.global_indices.size() * sizeof(glm::uvec3),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
+#endif
     }
     
     // 3. Global Normal Buffer
     if (!scene.global_normals.empty()) {
         global_normal_count = scene.global_normals.size();
         
+#ifdef USE_SLANG_COMPILER
+        // Slang generates ArrayStride 16 for vec3, so pad to vec4
+        std::vector<glm::vec4> padded_normals(global_normal_count);
+        for (size_t i = 0; i < global_normal_count; ++i) {
+            padded_normals[i] = glm::vec4(scene.global_normals[i], 0.0f);
+        }
+        upload_global_buffer(
+            global_normal_buffer,
+            padded_normals.data(),
+            padded_normals.size() * sizeof(glm::vec4),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+#else
+        // GLSL uses scalar block layout with ArrayStride 12
         upload_global_buffer(
             global_normal_buffer,
             scene.global_normals.data(),
             scene.global_normals.size() * sizeof(glm::vec3),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
+#endif
     }
     
     // 4. Global UV Buffer
@@ -845,8 +890,7 @@ void RenderVulkan::build_raytracing_pipeline()
             .add_binding(
                 4, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
-                5, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 
-                VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+                5, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
 #ifdef REPORT_RAY_STATS
             .add_binding(
                 6, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
@@ -862,10 +906,7 @@ void RenderVulkan::build_raytracing_pipeline()
                 13, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
             .add_binding(
                 14, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
-            // Explicit sampler at binding 29 for Slang (must be before variable-count textures)
-            .add_binding(
-                29, 1, VK_DESCRIPTOR_TYPE_SAMPLER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
-            // Textures at binding 30 (combined image samplers) - MUST BE LAST BINDING
+            // Textures at binding 30 (single descriptor set architecture)
             .add_binding(
                 30,
                 std::max(textures.size(), size_t(1)),
@@ -983,8 +1024,7 @@ void RenderVulkan::build_shader_descriptor_table()
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},  // 2 existing + 5 global buffers
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             std::max(uint32_t(textures.size()), uint32_t(1))}, // Moved from Set 1
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1}};  // Explicit sampler at binding 31
+                             std::max(uint32_t(textures.size()), uint32_t(1))}}; // Moved from Set 1
 
     VkDescriptorPoolCreateInfo pool_create_info = {};
     pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1032,23 +1072,6 @@ void RenderVulkan::build_shader_descriptor_table()
         updater.write_combined_sampler_array(desc_set, 30, combined_samplers);
     }
     updater.update(*device);
-
-    // Write explicit sampler at binding 29 for Slang
-    {
-        VkDescriptorImageInfo sampler_info = {};
-        sampler_info.sampler = sampler;
-        
-        VkWriteDescriptorSet sampler_write = {};
-        sampler_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        sampler_write.dstSet = desc_set;
-        sampler_write.dstBinding = 29;
-        sampler_write.dstArrayElement = 0;
-        sampler_write.descriptorCount = 1;
-        sampler_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-        sampler_write.pImageInfo = &sampler_info;
-        
-        vkUpdateDescriptorSets(device->logical_device(), 1, &sampler_write, 0, nullptr);
-    }
 
     // ============================================================================
     // Write global buffer descriptors

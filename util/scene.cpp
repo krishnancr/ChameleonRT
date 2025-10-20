@@ -1047,6 +1047,13 @@ void Scene::build_global_buffers()
                 global_uvs.push_back(uv);
             }
             
+            // DIAGNOSTIC: Check if UV count matches vertex count
+            if (geom.uvs.size() != geom.vertices.size() && !geom.uvs.empty()) {
+                std::cout << "  [WARNING] MeshDesc " << (mesh_descriptors.size()-1) 
+                          << ": UV count (" << geom.uvs.size() 
+                          << ") != vertex count (" << geom.vertices.size() << ")\n";
+            }
+            
             // Update offsets
             vertexOffset += static_cast<uint32_t>(geom.vertices.size());
             indexOffset += static_cast<uint32_t>(geom.indices.size());

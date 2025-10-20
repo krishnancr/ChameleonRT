@@ -47,10 +47,8 @@ StructuredBuffer<MaterialParams> material_params : register(t1);
 
 // Textures and sampler (matches HLSL layout)
 #ifdef VULKAN
-[[vk::binding(29, 0)]]  // Vulkan: explicit sampler at binding 29 (before textures)
-SamplerState tex_sampler;
 [[vk::binding(30, 0)]]  // Vulkan: combined image samplers for textures (must be last binding)
-Texture2D textures[];
+Sampler2D textures[];
 #else // DXR
 // Unbounded texture array - moved to t30 to avoid conflict with global buffers at t10-t14
 Texture2D textures[] : register(t30, space0);
@@ -65,18 +63,7 @@ SamplerState tex_sampler : register(s0);
 #define GET_TEXTURE_ID(x) ((x) & 0x1fffffff)
 #define SET_TEXTURE_ID(x, i) (x |= i & 0x1fffffff)
 
-// Texture sampling function (matches HLSL implementation)
-float textured_scalar_param(const float x, in const float2 uv) {
-    const uint mask = asuint(x);
-    if (IS_TEXTURED_PARAM(mask)) {
-        const uint tex_id = GET_TEXTURE_ID(mask);
-        const uint channel = GET_TEXTURE_CHANNEL(mask);
-        return textures[NonUniformResourceIndex(tex_id)]
-            .SampleLevel(tex_sampler, uv, 0)[channel];
-        
-    }
-    return x;
-}
+
 
 // MeshDesc structure for per-mesh metadata (matches HLSL layout)
 struct MeshDesc {
@@ -147,11 +134,12 @@ cbuffer HitGroupData : register(b2, space0)
 #endif
 
 // Primary ray payload (matches HLSL HitInfo structure)
+// Use explicit std430 layout to match Vulkan expectations
 struct Payload
 {
-    float4 color_dist;  // xy=UV coordinates, z=unused, w=ray distance
-    float4 normal;      // xyz=surface normal, w=material_id  
-}
+    float4 color_dist;  // Offset 0: xy=UV coordinates, z=unused, w=ray distance
+    float4 normal;      // Offset 16: xyz=surface normal, w=material_id  
+};
 
 // ========== Ray Generation Shader ==========
 
@@ -205,14 +193,20 @@ void RayGen()
         
         // Sample base_color (either from texture or material parameter)
         float3 base_color;
+        
         const uint mask = asuint(p.base_color.x);
         if (IS_TEXTURED_PARAM(mask)) {
             const uint tex_id = GET_TEXTURE_ID(mask);
-            base_color = textures[NonUniformResourceIndex(tex_id)]
-                .SampleLevel(tex_sampler, uv, 0).xyz;
+            #ifdef VULKAN
+                base_color = textures[(tex_id)].SampleLevel(uv, 0).xyz;
+            #else
+                base_color = textures[NonUniformResourceIndex(tex_id)].SampleLevel(tex_sampler, uv, 0).xyz;
+            #endif
+
         } else {
             base_color = p.base_color;
         }
+        
         display_color = base_color;
     }
     outputTexture[pixel] = float4(display_color, 1.0);
@@ -233,56 +227,35 @@ void Miss(inout Payload payload)
 [shader("closesthit")]
 void ClosestHit(
     inout Payload payload,
-    in BuiltInTriangleIntersectionAttributes attrib)
+    in BuiltInTriangleIntersectionAttributes bary)
 {
-    // Use meshDescIndex from SBT to identify which geometry was hit
-    // InstanceID() returns instance index (TLAS), but we need geometry index (BLAS)
-    // Since GeometryIndex() is unavailable in SM 6.3, we pass meshDescIndex via SBT
     const uint meshID = meshDescIndex;
-    
-    // Load mesh descriptor
     MeshDesc mesh = meshDescs[NonUniformResourceIndex(meshID)];
     
     // Load indices from global buffer (with offset)
     uint3 idx = globalIndices[NonUniformResourceIndex(mesh.ibOffset + PrimitiveIndex())];
     
-    // CRITICAL: idx contains GLOBAL vertex indices (already offset by vbOffset during build)
-    // So we use idx directly for vertices, but need LOCAL indices for UVs/normals
-    
-    // Load vertices from global buffer (NO additional offset - idx is already global!)
+    // Load vertices (idx contains global vertex indices)
     float3 va = globalVertices[NonUniformResourceIndex(idx.x)];
     float3 vb = globalVertices[NonUniformResourceIndex(idx.y)];
     float3 vc = globalVertices[NonUniformResourceIndex(idx.z)];
     float3 ng = normalize(cross(vb - va, vc - va));
 
-    float3 n = ng;
-    // Per-vertex normals (can be enabled if needed)
-    uint3 local_vertex_idx = idx - uint3(mesh.vbOffset, mesh.vbOffset, mesh.vbOffset);
-    
-    // Note: Normal interpolation disabled for now (matches HLSL #if 0 block)
-    // if (mesh.num_normals > 0) {
-    //     float3 na = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.x)];
-    //     float3 nb = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.y)];
-    //     float3 nc = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.z)];
-    //     n = normalize((1.f - attrib.barycentrics.x - attrib.barycentrics.y) * na
-    //             + attrib.barycentrics.x * nb + attrib.barycentrics.y * nc);
-    // }
-
     // Convert global vertex indices to local indices for UV lookup
     float2 uv = float2(0, 0);
     if (mesh.num_uvs > 0) {
+        uint3 local_vertex_idx = idx - uint3(mesh.vbOffset, mesh.vbOffset, mesh.vbOffset);
         float2 uva = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.x)];
         float2 uvb = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.y)];
         float2 uvc = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.z)];
-        uv = (1.f - attrib.barycentrics.x - attrib.barycentrics.y) * uva
-            + attrib.barycentrics.x * uvb + attrib.barycentrics.y * uvc;
+        
+        uv = (1.f - bary.barycentrics.x - bary.barycentrics.y) * uva
+            + bary.barycentrics.x * uvb + bary.barycentrics.y * uvc;
     }
 
-    // Both DXR and Vulkan: Return geometry data for material processing in RayGen
     payload.color_dist = float4(uv, 0, RayTCurrent());
-    payload.normal = float4(n, mesh.material_id);
+    payload.normal = float4(ng, mesh.material_id);
 }
-
 // ========== Shadow Miss Shader ==========
 
 [shader("miss")]
