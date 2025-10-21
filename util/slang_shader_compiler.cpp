@@ -131,7 +131,7 @@ std::optional<std::vector<ShaderBlob>> SlangShaderCompiler::compileHLSLToDXILLib
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
     
-    // Add search paths for #include resolution (if provided)
+    // Add search paths for module import resolution
     std::vector<const char*> searchPathPtrs;
     if (!searchPaths.empty()) {
         searchPathPtrs.reserve(searchPaths.size());
@@ -307,7 +307,16 @@ std::optional<std::vector<ShaderBlob>> SlangShaderCompiler::compileSlangToDXILLi
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
     
-    // DO NOT use searchPaths - this was the root cause of DXIL signing issues
+    // Add search paths for module import resolution
+    std::vector<const char*> searchPathPtrs;
+    if (!searchPaths.empty()) {
+        searchPathPtrs.reserve(searchPaths.size());
+        for (const auto& path : searchPaths) {
+            searchPathPtrs.push_back(path.c_str());
+        }
+        sessionDesc.searchPaths = searchPathPtrs.data();
+        sessionDesc.searchPathCount = (SlangInt)searchPathPtrs.size();
+    }
     
     // Create session for this compilation
     Slang::ComPtr<slang::ISession> compileSession;
@@ -472,8 +481,16 @@ std::optional<std::vector<ShaderBlob>> SlangShaderCompiler::compileSlangToSPIRVL
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
     
-    // DO NOT use searchPaths - this was the root cause of DXIL signing issues
-    // Keep same approach for SPIRV consistency
+    // Add search paths for module import resolution
+    std::vector<const char*> searchPathPtrs;
+    if (!searchPaths.empty()) {
+        searchPathPtrs.reserve(searchPaths.size());
+        for (const auto& path : searchPaths) {
+            searchPathPtrs.push_back(path.c_str());
+        }
+        sessionDesc.searchPaths = searchPathPtrs.data();
+        sessionDesc.searchPathCount = (SlangInt)searchPathPtrs.size();
+    }
     
     // Create session for this compilation
     Slang::ComPtr<slang::ISession> compileSession;

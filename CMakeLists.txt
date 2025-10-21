@@ -115,11 +115,29 @@ if(ENABLE_SLANG)
         list(APPEND SLANG_SHADER_FILES minimal_rt.slang)
     endif()
     
+    # Phase 3 module files
+    set(SLANG_MODULE_FILES
+        modules/util.slang
+        modules/lcg_rng.slang
+        modules/disney_bsdf.slang
+        modules/lights.slang
+    )
+    
+    # Test shader for Phase 3.1 validation
+    list(APPEND SLANG_SHADER_FILES test_phase3_modules.slang)
+    
     # Create shaders directory in output
     add_custom_command(TARGET chameleonrt POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_FILE_DIR:chameleonrt>/shaders"
         COMMENT "Creating shaders directory in output"
+    )
+    
+    # Create modules subdirectory
+    add_custom_command(TARGET chameleonrt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:chameleonrt>/shaders/modules"
+        COMMENT "Creating shaders/modules directory in output"
     )
     
     # Copy each Slang shader file to the output directory
@@ -134,6 +152,20 @@ if(ENABLE_SLANG)
             )
         else()
             message(WARNING "Slang shader file not found: ${CMAKE_SOURCE_DIR}/shaders/${SHADER_FILE}")
+        endif()
+    endforeach()
+    
+    # Copy module files
+    foreach(MODULE_FILE ${SLANG_MODULE_FILES})
+        if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/${MODULE_FILE}")
+            add_custom_command(TARGET chameleonrt POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_SOURCE_DIR}/shaders/${MODULE_FILE}"
+                    "$<TARGET_FILE_DIR:chameleonrt>/shaders/${MODULE_FILE}"
+                COMMENT "Copying ${MODULE_FILE} to output directory"
+            )
+        else()
+            message(WARNING "Slang module file not found: ${CMAKE_SOURCE_DIR}/shaders/${MODULE_FILE}")
         endif()
     endforeach()
     

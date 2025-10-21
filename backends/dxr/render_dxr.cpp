@@ -819,8 +819,8 @@ void RenderDXR::build_raytracing_pipeline()
     }
     
     // Compile Slang to DXIL using Slang (per-entry-point compilation)
-    // Slang handles #include resolution automatically using searchPaths
-    auto result = slangCompiler.compileSlangToDXILLibrary(slang_source);
+    // Slang handles module import resolution using searchPaths
+    auto result = slangCompiler.compileSlangToDXILLibrary(slang_source, {"shaders"});
     
     if (!result) {
         std::string error = slangCompiler.getLastError();
