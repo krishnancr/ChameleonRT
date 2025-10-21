@@ -56,24 +56,18 @@ float lcg_randomf(inout LCGRand rng)
     return ldexp(float(lcg_random(rng)), -32);
 }
 
-// Initialize RNG with pixel coordinates and frame ID
-// Note: This version doesn't use DispatchRaysIndex() to remain standalone
-LCGRand get_rng(uint2 pixel, uint2 dims, int frame_id)
+// Initialize RNG - matches HLSL/GLSL exactly
+LCGRand get_rng(int frame_id)
 {
+    const uint2 pixel = DispatchRaysIndex().xy;
+    const uint2 dims = DispatchRaysDimensions().xy;
+
     LCGRand rng;
     rng.state = murmur_hash3_mix(0, pixel.x + pixel.y * dims.x);
     rng.state = murmur_hash3_mix(rng.state, frame_id);
     rng.state = murmur_hash3_finalize(rng.state);
 
     return rng;
-}
-
-// Convenience function for ray generation shaders
-LCGRand get_rng_raygen(int frame_id)
-{
-    const uint2 pixel = DispatchRaysIndex().xy;
-    const uint2 dims = DispatchRaysDimensions().xy;
-    return get_rng(pixel, dims, frame_id);
 }
 
 #endif // LCG_RNG_SLANG

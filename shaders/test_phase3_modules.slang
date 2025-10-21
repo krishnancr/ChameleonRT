@@ -24,7 +24,7 @@ void TestRayGen()
     ortho_basis(tangent, bitangent, normal);
     
     // Test lcg_rng.slang
-    LCGRand rng = get_rng_raygen(0);
+    LCGRand rng = get_rng(0);
     float r1 = lcg_randomf(rng);
     float r2 = lcg_randomf(rng);
     
@@ -48,15 +48,19 @@ void TestRayGen()
     float3 brdf = disney_brdf(mat, normal, wo, wi, tangent, bitangent);
     
     // Test lights.slang
-    Light light;
-    light.position = float3(0, 5, 0);
-    light.type = LIGHT_TYPE_QUAD;
-    light.emission = float3(10, 10, 10);
-    light.area = 4.0;
-    light.v1 = float3(1, 0, 0);
-    light.v2 = float3(0, 0, 1);
+    QuadLight light;
+    light.emission = float4(10, 10, 10, 1);
+    light.position = float4(0, 5, 0, 1);
+    light.normal = float4(0, -1, 0, 0);
+    light.v_x = float4(1, 0, 0, 1.0);  // half-width = 1.0
+    light.v_y = float4(0, 0, 1, 1.0);  // half-height = 1.0
     
-    LightSample ls = sampleLight(light, float3(0, 0, 0), float2(r1, r2));
+    float3 lightPos = sample_quad_light_position(light, float2(r1, r2));
+    float pdf = quad_light_pdf(light, lightPos, float3(0, 0, 0), float3(0, 1, 0));
+    
+    float t;
+    float3 hitPos;
+    bool hit = quad_intersect(light, float3(0, 0, 0), float3(0, 1, 0), t, hitPos);
     
     // All modules imported and used successfully!
 }

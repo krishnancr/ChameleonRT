@@ -25,6 +25,7 @@ import modules.lights;
     uint samples_per_pixel;
 }
 [[vk::binding(4, 0)]] StructuredBuffer<MaterialParams> material_params;
+[[vk::binding(5, 0)]] StructuredBuffer<QuadLight> lights;
 [[vk::binding(10, 0)]] StructuredBuffer<float3> globalVertices;
 [[vk::binding(11, 0)]] StructuredBuffer<uint3> globalIndices;
 [[vk::binding(12, 0)]] StructuredBuffer<float3> globalNormals;
@@ -46,6 +47,7 @@ cbuffer ViewParams : register(b0) {
     uint samples_per_pixel;
 }
 StructuredBuffer<MaterialParams> material_params : register(t1);
+StructuredBuffer<QuadLight> lights : register(t2);
 StructuredBuffer<float3> globalVertices : register(t10, space0);
 StructuredBuffer<uint3> globalIndices : register(t11, space0);
 StructuredBuffer<float3> globalNormals : register(t12, space0);
@@ -214,6 +216,15 @@ void RayGen()
         
         MaterialParams mat = evaluate_material_at_surface(material_id, surface_uv);
         display_color = mat.base_color;
+        
+        // PHASE 3.2 TEST: Verify light buffer access
+        // ✅ SUCCESS! Light buffer is readable!
+        // Uncomment below to see actual light emission (will be VERY bright)
+        #if 0
+        QuadLight firstLight = lights[0];
+        // Show actual emission (will saturate to white - proves buffer works!)
+        display_color = firstLight.emission.rgb;
+        #endif
     }
     outputTexture[pixel] = float4(display_color, 1.0);
 }

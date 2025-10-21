@@ -1,93 +1,73 @@
 // Light sampling functions
-// NEW module for Phase 3
+// Direct port from backends/dxr/lights.hlsl and backends/vulkan/lights.glsl
 
-#ifndef LIGHTS_SLANG
-#define LIGHTS_SLANG
+#ifndef LIGHTS_SLSL
+#define LIGHTS_SLSL
 
 import util;
 
-// Light types (using constants instead of #define for Slang compatibility)
-static const uint LIGHT_TYPE_QUAD = 0;
-static const uint LIGHT_TYPE_SPHERE = 1;
-
-// Light structure (must match C++ side QuadLight structure)
-struct Light {
-    float3 position;
-    uint type;           // LIGHT_TYPE_QUAD, LIGHT_TYPE_SPHERE
-    float3 emission;     // Emitted radiance
-    float area;          // Surface area
-    float3 v1;          // Edge 1 for quad lights
-    float pad1;
-    float3 v2;          // Edge 2 for quad lights
-    float pad2;
+// Quad-shaped light source
+// MUST match C++ QuadLight structure exactly (80 bytes total)
+struct QuadLight {
+    float4 emission;   // RGB emission + padding (16 bytes)
+    float4 position;   // XYZ position + padding (16 bytes)
+    float4 normal;     // XYZ normal + padding (16 bytes)
+    // x and y vectors spanning the quad, with
+    // the half-width and height in the w component
+    float4 v_x;        // X-axis tangent (xyz) + half-width (w) (16 bytes)
+    float4 v_y;        // Y-axis tangent (xyz) + half-height (w) (16 bytes)
 };
 
-// Light sample result
-struct LightSample {
-    float3 position;    // Point on light
-    float3 normal;      // Light normal
-    float3 wi;          // Direction to light (normalized)
-    float3 radiance;    // Emitted radiance
-    float distance;     // Distance to light
-    float pdf;          // Sampling probability density
-};
-
-// Sample a quad area light
-LightSample sampleQuadLight(Light light, float3 shadingPoint, float2 random) {
-    LightSample ls;
-    
-    // Sample random point on quad
-    float2 uv = random;
-    float3 pointOnLight = light.position + uv.x * light.v1 + uv.y * light.v2;
-    
-    // Direction and distance to light
-    float3 toLight = pointOnLight - shadingPoint;
-    ls.distance = length(toLight);
-    ls.wi = toLight / ls.distance;
-    
-    // Light normal (cross product of quad edges)
-    ls.normal = normalize(cross(light.v1, light.v2));
-    
-    // Radiance
-    ls.radiance = light.emission;
-    
-    // PDF: (distance^2) / (area * |cos(theta)|)
-    // where theta is angle between light normal and direction to shading point
-    float cosTheta = abs(dot(ls.normal, -ls.wi));
-    ls.pdf = (ls.distance * ls.distance) / (light.area * cosTheta + 1e-8);
-    
-    ls.position = pointOnLight;
-    
-    return ls;
+// Sample a random position on the quad light surface
+float3 sample_quad_light_position(const QuadLight light, float2 samples)
+{
+    return samples.x * light.v_x.xyz * light.v_x.w + samples.y * light.v_y.xyz * light.v_y.w +
+           light.position.xyz;
 }
 
-// Sample a sphere area light (simplified - treat as point light for now)
-LightSample sampleSphereLight(Light light, float3 shadingPoint, float2 random) {
-    LightSample ls;
-    
-    // For now: sample center of sphere (point light approximation)
-    // TODO: Proper sphere sampling for large lights
-    
-    float3 toLight = light.position - shadingPoint;
-    ls.distance = length(toLight);
-    ls.wi = toLight / ls.distance;
-    ls.normal = -ls.wi;
-    ls.radiance = light.emission;
-    ls.position = light.position;
-    
-    // PDF: 1.0 for point light
-    ls.pdf = 1.0;
-    
-    return ls;
-}
-
-// Main light sampling function
-LightSample sampleLight(Light light, float3 shadingPoint, float2 random) {
-    if (light.type == LIGHT_TYPE_QUAD) {
-        return sampleQuadLight(light, shadingPoint, random);
-    } else {
-        return sampleSphereLight(light, shadingPoint, random);
+/* Compute the PDF of sampling the sampled point p light with the ray specified by orig and
+ * dir, assuming the light is not occluded
+ */
+float quad_light_pdf(const QuadLight light,
+                     const float3 p,
+                     const float3 orig,
+                     const float3 dir)
+{
+    float surface_area = light.v_x.w * light.v_y.w;
+    float3 to_pt = p - dir;
+    float dist_sqr = dot(to_pt, to_pt);
+    float n_dot_w = dot(light.normal.xyz, -dir);
+    if (n_dot_w < EPSILON) {
+        return 0.f;
     }
+    return dist_sqr / (n_dot_w * surface_area);
 }
 
-#endif // LIGHTS_SLANG
+// Intersect ray with quad light
+bool quad_intersect(const QuadLight light,
+                    const float3 orig,
+                    const float3 dir,
+                    out float t,
+                    out float3 light_pos)
+{
+    float denom = dot(dir, light.normal.xyz);
+    if (denom != 0.f) {
+        t = dot(light.position.xyz - orig, light.normal.xyz) / denom;
+        if (t < 0.f) {
+            light_pos = float3(0, 0, 0);
+            return false;
+        }
+
+        // It's a finite plane so now see if the hit point is actually inside the plane
+        light_pos = orig + dir * t;
+        float3 hit_v = light_pos - light.position.xyz;
+        if (abs(dot(hit_v, light.v_x.xyz)) < light.v_x.w &&
+            abs(dot(hit_v, light.v_y.xyz)) < light.v_y.w) {
+            return true;
+        }
+    }
+    light_pos = float3(0, 0, 0);
+    return false;
+}
+
+#endif
