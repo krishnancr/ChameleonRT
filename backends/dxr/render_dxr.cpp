@@ -269,16 +269,11 @@ void RenderDXR::set_scene(const Scene &scene)
         D3D12_RAYTRACING_INSTANCE_DESC *buf =
             static_cast<D3D12_RAYTRACING_INSTANCE_DESC *>(upload_instance_buf.map());
 
-        std::cout << "Instance to HitGroup mapping:\n";
         for (size_t i = 0; i < scene.instances.size(); ++i) {
             const auto &inst = scene.instances[i];
             buf[i].InstanceID = i;
             buf[i].InstanceContributionToHitGroupIndex =
                 parameterized_mesh_sbt_offsets[inst.parameterized_mesh_id];
-            
-            std::cout << "  Instance[" << i << "] (InstanceID=" << i << ") -> "
-                      << "param_mesh" << inst.parameterized_mesh_id 
-                      << " -> HitGroupBase=" << buf[i].InstanceContributionToHitGroupIndex << "\n";
             
             buf[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE;
             buf[i].AccelerationStructure =
@@ -423,7 +418,6 @@ void RenderDXR::set_scene(const Scene &scene)
     // ============================================================================
     // Create Global Buffers (for shader access)
     // ============================================================================
-    std::cout << "Creating global buffers...\n";
 
     // 1. Global Vertex Buffer (positions)
     if (!scene.global_vertices.empty()) {
@@ -573,46 +567,6 @@ void RenderDXR::set_scene(const Scene &scene)
         CHECK_ERR(cmd_list->Close());
         cmd_queue->ExecuteCommandLists(1, &cmd_lists);
         sync_gpu();
-    }
-
-    std::cout << "Global buffers created successfully:\n";
-    std::cout << "  - Vertices (vec3):  " << scene.global_vertices.size() 
-              << " (" << (scene.global_vertices.size() * sizeof(glm::vec3)) << " bytes)\n";
-    std::cout << "  - Indices (uvec3):  " << scene.global_indices.size() 
-              << " (" << (scene.global_indices.size() * sizeof(glm::uvec3)) << " bytes)\n";
-    std::cout << "  - Normals (vec3):   " << scene.global_normals.size() 
-              << " (" << (scene.global_normals.size() * sizeof(glm::vec3)) << " bytes)\n";
-    std::cout << "  - UVs (vec2):       " << scene.global_uvs.size() 
-              << " (" << (scene.global_uvs.size() * sizeof(glm::vec2)) << " bytes)\n";
-    std::cout << "  - MeshDescs:        " << scene.mesh_descriptors.size() 
-              << " (" << (scene.mesh_descriptors.size() * sizeof(MeshDesc)) << " bytes)\n";
-
-    // GPU Upload Verification: Check GPU addresses and resource states
-    std::cout << "GPU Upload Verification:\n";
-    if (!scene.global_vertices.empty()) {
-        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = global_vertex_buffer->GetGPUVirtualAddress();
-        std::cout << "  - globalVertices GPU address: 0x" << std::hex << gpu_va << std::dec;
-        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
-    }
-    if (!scene.global_indices.empty()) {
-        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = global_index_buffer->GetGPUVirtualAddress();
-        std::cout << "  - globalIndices GPU address:  0x" << std::hex << gpu_va << std::dec;
-        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
-    }
-    if (!scene.global_normals.empty()) {
-        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = global_normal_buffer->GetGPUVirtualAddress();
-        std::cout << "  - globalNormals GPU address:  0x" << std::hex << gpu_va << std::dec;
-        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
-    }
-    if (!scene.global_uvs.empty()) {
-        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = global_uv_buffer->GetGPUVirtualAddress();
-        std::cout << "  - globalUVs GPU address:      0x" << std::hex << gpu_va << std::dec;
-        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
-    }
-    if (!scene.mesh_descriptors.empty()) {
-        D3D12_GPU_VIRTUAL_ADDRESS gpu_va = mesh_desc_buffer->GetGPUVirtualAddress();
-        std::cout << "  - meshDescs GPU address:      0x" << std::hex << gpu_va << std::dec;
-        std::cout << " (valid: " << (gpu_va != 0 ? "YES" : "NO") << ")\n";
     }
 
     build_shader_resource_heap();
@@ -849,8 +803,7 @@ void RenderDXR::create_device_objects()
 void RenderDXR::build_raytracing_pipeline()
 {
 #ifdef USE_SLANG_COMPILER
-    // Phase 1.3: Use Slang-compiled RT shaders if available
-    std::cout << "=== Phase 1.3: Building RT Pipeline with Slang Shaders ===\n";
+    // Use Slang-compiled RT shaders if available
     
     // Get shader path relative to DLL location
     std::filesystem::path dll_dir = get_dll_directory();
@@ -948,7 +901,6 @@ void RenderDXR::build_raytracing_pipeline()
     // Setup hit groups and shader root signatures for our instances
     std::vector<std::wstring> hg_names;
     size_t hit_group_index = 0;
-    std::cout << "Hit group to MeshDesc mapping:\n";
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id].geometries.size(); ++j) {
@@ -956,8 +908,6 @@ void RenderDXR::build_raytracing_pipeline()
                 L"HitGroup_param_mesh" + std::to_wstring(i) + L"_geom" + std::to_wstring(j);
             hg_names.push_back(hg_name);
             
-            std::cout << "  HitGroup[" << hit_group_index << "] = param_mesh" << i 
-                      << "_geom" << j << " -> MeshDesc[" << hit_group_index << "]\n";
             hit_group_index++;
 
             rt_pipeline_builder.add_hit_group(
@@ -974,7 +924,6 @@ void RenderDXR::build_shader_resource_heap()
 {
     // The CBV/SRV/UAV resource heap has the pointers/views things to our output image buffer
     // and the top level acceleration structure, and any textures
-    std::cout << "Building descriptor heap with global buffers...\n";
     
     raygen_desc_heap = dxr::DescriptorHeapBuilder()
 #if REPORT_RAY_STATS
@@ -988,21 +937,12 @@ void RenderDXR::build_shader_resource_heap()
                            .add_srv_range(5, 10, 0)  // t10-t14 (global buffers)
                            .create(device.Get());
 
-    std::cout << "Descriptor heap layout:\n";
-    std::cout << "  UAVs: 2 (u0-u1)\n";
-    std::cout << "  SRVs (scene): 3 (t0-t2)\n";
-    std::cout << "  CBVs: 1 (b0)\n";
-    std::cout << "  SRVs (textures): " << (!textures.empty() ? textures.size() : 1) << " (t30+)\n";
-    std::cout << "  SRVs (global): 5 (t10-t14)\n";
-    std::cout << "  Total descriptors: " << (2 + 3 + 1 + (!textures.empty() ? textures.size() : 1) + 5) << "\n";
-
     raygen_sampler_heap =
         dxr::DescriptorHeapBuilder().add_sampler_range(1, 0, 0).create(device.Get());
 }
 
 void RenderDXR::build_shader_binding_table()
 {
-    std::cout << "Building shader binding table...\n";
     rt_pipeline.map_shader_table();
     {
         uint8_t *map = rt_pipeline.shader_record(L"RayGen");
@@ -1025,23 +965,9 @@ void RenderDXR::build_shader_binding_table()
 
             const uint32_t mesh_desc_idx = static_cast<uint32_t>(mesh_desc_index);
             
-            // DEBUG: Print what we're writing
-            if (mesh_desc_index < 5) {
-                std::cout << "  Writing meshDescIndex=" << mesh_desc_idx 
-                          << " to HitGroup " << i << "_" << j 
-                          << " at offset=" << sig->offset("HitGroupData") << "\n";
-            }
-            
             std::memcpy(map + sig->offset("HitGroupData"),
                         &mesh_desc_idx,
                         sizeof(uint32_t));
-            
-            // DEBUG: Read back to verify
-            if (mesh_desc_index < 5) {
-                uint32_t readback;
-                std::memcpy(&readback, map + sig->offset("HitGroupData"), sizeof(uint32_t));
-                std::cout << "  Readback verification: " << readback << "\n";
-            }
             
             mesh_desc_index++;
         }
@@ -1174,19 +1100,11 @@ void RenderDXR::build_descriptor_heap()
     }
 
     // Create SRVs for global buffers at t10-t14
-    std::cout << "Creating SRVs for global buffers...\n";
-    
     const UINT descriptor_increment = device->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    
-    std::cout << "Current heap_handle offset from start: " 
-              << (heap_handle.ptr - raygen_desc_heap.cpu_desc_handle().ptr) / descriptor_increment
-              << " descriptors\n";
 
     // ===== t10: globalVertices SRV =====
     if (global_vertex_count > 0) {
-        std::cout << "  Creating globalVertices SRV at t10...\n";
-        
         D3D12_SHADER_RESOURCE_VIEW_DESC vertex_srv_desc = {};
         vertex_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
         vertex_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -1201,16 +1119,11 @@ void RenderDXR::build_descriptor_heap()
             &vertex_srv_desc,
             heap_handle
         );
-        
-        std::cout << "    NumElements: " << vertex_srv_desc.Buffer.NumElements 
-                  << ", StructureByteStride: " << vertex_srv_desc.Buffer.StructureByteStride << "\n";
     }
     heap_handle.ptr += descriptor_increment;
 
     // ===== t11: globalIndices SRV =====
     if (global_index_count > 0) {
-        std::cout << "  Creating globalIndices SRV at t11...\n";
-        
         D3D12_SHADER_RESOURCE_VIEW_DESC index_srv_desc = {};
         index_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
         index_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -1225,16 +1138,11 @@ void RenderDXR::build_descriptor_heap()
             &index_srv_desc,
             heap_handle
         );
-        
-        std::cout << "    NumElements: " << index_srv_desc.Buffer.NumElements 
-                  << ", StructureByteStride: " << index_srv_desc.Buffer.StructureByteStride << "\n";
     }
     heap_handle.ptr += descriptor_increment;
 
     // ===== t12: globalNormals SRV =====
     if (global_normal_count > 0) {
-        std::cout << "  Creating globalNormals SRV at t12...\n";
-        
         D3D12_SHADER_RESOURCE_VIEW_DESC normal_srv_desc = {};
         normal_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
         normal_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -1249,16 +1157,11 @@ void RenderDXR::build_descriptor_heap()
             &normal_srv_desc,
             heap_handle
         );
-        
-        std::cout << "    NumElements: " << normal_srv_desc.Buffer.NumElements 
-                  << ", StructureByteStride: " << normal_srv_desc.Buffer.StructureByteStride << "\n";
     }
     heap_handle.ptr += descriptor_increment;
 
     // ===== t13: globalUVs SRV =====
     if (global_uv_count > 0) {
-        std::cout << "  Creating globalUVs SRV at t13...\n";
-        
         D3D12_SHADER_RESOURCE_VIEW_DESC uv_srv_desc = {};
         uv_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
         uv_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -1273,16 +1176,11 @@ void RenderDXR::build_descriptor_heap()
             &uv_srv_desc,
             heap_handle
         );
-        
-        std::cout << "    NumElements: " << uv_srv_desc.Buffer.NumElements 
-                  << ", StructureByteStride: " << uv_srv_desc.Buffer.StructureByteStride << "\n";
     }
     heap_handle.ptr += descriptor_increment;
 
     // ===== t14: meshDescs SRV =====
     if (mesh_desc_count > 0) {
-        std::cout << "  Creating meshDescs SRV at t14...\n";
-        
         D3D12_SHADER_RESOURCE_VIEW_DESC mesh_srv_desc = {};
         mesh_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
         mesh_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -1297,14 +1195,8 @@ void RenderDXR::build_descriptor_heap()
             &mesh_srv_desc,
             heap_handle
         );
-        
-        std::cout << "    NumElements: " << mesh_srv_desc.Buffer.NumElements 
-                  << ", StructureByteStride: " << mesh_srv_desc.Buffer.StructureByteStride << "\n";
     }
     heap_handle.ptr += descriptor_increment;
-
-    std::cout << "SRVs created successfully at t10-t14\n";
-
 
     // Write the sampler to the sampler heap
     D3D12_SAMPLER_DESC sampler_desc = {0};

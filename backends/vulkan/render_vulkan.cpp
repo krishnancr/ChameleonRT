@@ -681,13 +681,19 @@ void RenderVulkan::set_scene(const Scene &scene)
     // ============================================================================
     // Create global geometry buffers from scene data
     // ============================================================================
+    //
+    // NOTE: Slang SPIRV codegen uses standard SPIRV array layout rules which 
+    // require vec3/uvec3 arrays to have ArrayStride 16 (aligned to vec4).
+    // GLSL with VK_EXT_scalar_block_layout can use tightly-packed ArrayStride 12.
+    // Therefore, we pad vec3/uvec3 data to vec4/uvec4 when using Slang compiler.
+    // ============================================================================
     
-    // 1. Global Vertex Buffer (positions)
+#ifdef USE_SLANG_COMPILER
+    // --- Slang: Pad vec3/uvec3 arrays to vec4/uvec4 (ArrayStride 16) ---
+    
+    // 1. Global Vertex Buffer (vec3 positions -> padded to vec4)
     if (!scene.global_vertices.empty()) {
         global_vertex_count = scene.global_vertices.size();
-        
-#ifdef USE_SLANG_COMPILER
-        // Slang generates ArrayStride 16 for vec3, so pad to vec4
         std::vector<glm::vec4> padded_vertices(global_vertex_count);
         for (size_t i = 0; i < global_vertex_count; ++i) {
             padded_vertices[i] = glm::vec4(scene.global_vertices[i], 0.0f);
@@ -698,23 +704,11 @@ void RenderVulkan::set_scene(const Scene &scene)
             padded_vertices.size() * sizeof(glm::vec4),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
-#else
-        // GLSL uses scalar block layout with ArrayStride 12
-        upload_global_buffer(
-            global_vertex_buffer,
-            scene.global_vertices.data(),
-            scene.global_vertices.size() * sizeof(glm::vec3),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-        );
-#endif
     }
     
-    // 2. Global Index Buffer (uvec3 triangles)
+    // 2. Global Index Buffer (uvec3 triangles -> padded to uvec4)
     if (!scene.global_indices.empty()) {
         global_index_count = scene.global_indices.size();
-        
-#ifdef USE_SLANG_COMPILER
-        // Slang generates ArrayStride 16 for uvec3, so pad to uvec4
         std::vector<glm::uvec4> padded_indices(global_index_count);
         for (size_t i = 0; i < global_index_count; ++i) {
             padded_indices[i] = glm::uvec4(scene.global_indices[i], 0u);
@@ -725,23 +719,11 @@ void RenderVulkan::set_scene(const Scene &scene)
             padded_indices.size() * sizeof(glm::uvec4),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
-#else
-        // GLSL uses scalar block layout with ArrayStride 12
-        upload_global_buffer(
-            global_index_buffer,
-            scene.global_indices.data(),
-            scene.global_indices.size() * sizeof(glm::uvec3),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-        );
-#endif
     }
     
-    // 3. Global Normal Buffer
+    // 3. Global Normal Buffer (vec3 normals -> padded to vec4)
     if (!scene.global_normals.empty()) {
         global_normal_count = scene.global_normals.size();
-        
-#ifdef USE_SLANG_COMPILER
-        // Slang generates ArrayStride 16 for vec3, so pad to vec4
         std::vector<glm::vec4> padded_normals(global_normal_count);
         for (size_t i = 0; i < global_normal_count; ++i) {
             padded_normals[i] = glm::vec4(scene.global_normals[i], 0.0f);
@@ -752,16 +734,45 @@ void RenderVulkan::set_scene(const Scene &scene)
             padded_normals.size() * sizeof(glm::vec4),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
+    }
+    
 #else
-        // GLSL uses scalar block layout with ArrayStride 12
+    // --- GLSL: Use native vec3/uvec3 with scalar block layout (ArrayStride 12) ---
+    
+    // 1. Global Vertex Buffer (vec3 positions, tightly packed)
+    if (!scene.global_vertices.empty()) {
+        global_vertex_count = scene.global_vertices.size();
+        upload_global_buffer(
+            global_vertex_buffer,
+            scene.global_vertices.data(),
+            scene.global_vertices.size() * sizeof(glm::vec3),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+    
+    // 2. Global Index Buffer (uvec3 triangles, tightly packed)
+    if (!scene.global_indices.empty()) {
+        global_index_count = scene.global_indices.size();
+        upload_global_buffer(
+            global_index_buffer,
+            scene.global_indices.data(),
+            scene.global_indices.size() * sizeof(glm::uvec3),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+    
+    // 3. Global Normal Buffer (vec3 normals, tightly packed)
+    if (!scene.global_normals.empty()) {
+        global_normal_count = scene.global_normals.size();
         upload_global_buffer(
             global_normal_buffer,
             scene.global_normals.data(),
             scene.global_normals.size() * sizeof(glm::vec3),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
-#endif
     }
+    
+#endif
     
     // 4. Global UV Buffer
     if (!scene.global_uvs.empty()) {
@@ -936,9 +947,7 @@ void RenderVulkan::build_raytracing_pipeline()
         device->logical_device(), &pipeline_create_info, nullptr, &pipeline_layout));
 
 #ifdef USE_SLANG_COMPILER
-    // Phase 1.4: Load and compile Slang RT shaders
-    std::cout << "=== Phase 1.4: Building RT Pipeline with Slang Shaders (Vulkan) ===" << std::endl;
-    
+    // Load and compile Slang RT shaders
     chameleonrt::SlangShaderCompiler slangCompiler;
     if (!slangCompiler.isValid()) {
         throw std::runtime_error("Failed to initialize Slang shader compiler");
@@ -956,15 +965,10 @@ void RenderVulkan::build_raytracing_pipeline()
         throw std::runtime_error("Failed to compile Slang shader to SPIRV: " + slangCompiler.getLastError());
     }
     
-    std::cout << "Successfully compiled " << result->size() << " SPIRV entry points from Slang" << std::endl;
-    
     // Create shader modules from compiled SPIRV
     std::shared_ptr<vkrt::ShaderModule> raygen_shader, miss_shader, occlusion_miss_shader, closest_hit_shader;
     
     for (const auto& blob : *result) {
-        std::cout << "Processing entry point: " << blob.entryPoint 
-                  << " (size: " << blob.bytecode.size() << " bytes)" << std::endl;
-        
         // Validate SPIRV size alignment
         if (blob.bytecode.size() % 4 != 0) {
             std::cerr << "ERROR: SPIRV size " << blob.bytecode.size() 

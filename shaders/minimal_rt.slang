@@ -1,34 +1,16 @@
 // Unified minimal ray tracing shader - works for both DXR and Vulkan
-// This shader is designed for Phase 1 Slang integration testing
-// Uses preprocessor guards to handle binding differences between APIs
+// Phase 2: Textured materials with consolidated bindings
 
-// Ray tracing acceleration structure
-#ifdef VULKAN
-[[vk::binding(0, 0)]]
-RaytracingAccelerationStructure scene;
-#else // DXR
-RaytracingAccelerationStructure scene : register(t0);
-#endif
+// =============================================================================
+// BACKEND-SPECIFIC RESOURCE BINDINGS
+// =============================================================================
 
-// Output texture  
 #ifdef VULKAN
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> outputTexture;
-[[vk::binding(2, 0)]]  
-RWTexture2D<float4> accum_buffer;
-#else // DXR
-RWTexture2D<float4> outputTexture : register(u0);
-RWTexture2D<float4> accum_buffer : register(u1);
-#endif
-
-// Simple camera parameters
-#ifdef VULKAN
-[[vk::binding(3, 0)]]
-cbuffer ViewParams
-#else // DXR
-cbuffer ViewParams : register(b0)
-#endif
-{
+// Vulkan bindings (all in Set 0)
+[[vk::binding(0, 0)]] RaytracingAccelerationStructure scene;
+[[vk::binding(1, 0)]] RWTexture2D<float4> outputTexture;
+[[vk::binding(2, 0)]] RWTexture2D<float4> accum_buffer;
+[[vk::binding(3, 0)]] cbuffer ViewParams {
     float4 cam_pos;
     float4 cam_du;  
     float4 cam_dv;
@@ -36,34 +18,47 @@ cbuffer ViewParams : register(b0)
     uint frame_id;
     uint samples_per_pixel;
 }
-
-// Scene buffers (matches HLSL layout)
-#ifdef VULKAN
-[[vk::binding(4, 0)]]  // Vulkan: material_params is at binding 4 (mat_params in backend)
-StructuredBuffer<MaterialParams> material_params;
-#else // DXR
+[[vk::binding(4, 0)]] StructuredBuffer<MaterialParams> material_params;
+[[vk::binding(10, 0)]] StructuredBuffer<float3> globalVertices;
+[[vk::binding(11, 0)]] StructuredBuffer<uint3> globalIndices;
+[[vk::binding(12, 0)]] StructuredBuffer<float3> globalNormals;
+[[vk::binding(13, 0)]] StructuredBuffer<float2> globalUVs;
+[[vk::binding(14, 0)]] StructuredBuffer<MeshDesc> meshDescs;
+[[vk::binding(30, 0)]] Sampler2D textures[];
+[[vk::shader_record]] cbuffer HitGroupData { uint meshDescIndex; }
+#else
+// DXR register bindings
+RaytracingAccelerationStructure scene : register(t0);
+RWTexture2D<float4> outputTexture : register(u0);
+RWTexture2D<float4> accum_buffer : register(u1);
+cbuffer ViewParams : register(b0) {
+    float4 cam_pos;
+    float4 cam_du;  
+    float4 cam_dv;
+    float4 cam_dir_top_left;
+    uint frame_id;
+    uint samples_per_pixel;
+}
 StructuredBuffer<MaterialParams> material_params : register(t1);
-#endif
-
-// Textures and sampler (matches HLSL layout)
-#ifdef VULKAN
-[[vk::binding(30, 0)]]  // Vulkan: combined image samplers for textures (must be last binding)
-Sampler2D textures[];
-#else // DXR
-// Unbounded texture array - moved to t30 to avoid conflict with global buffers at t10-t14
+StructuredBuffer<float3> globalVertices : register(t10, space0);
+StructuredBuffer<uint3> globalIndices : register(t11, space0);
+StructuredBuffer<float3> globalNormals : register(t12, space0);
+StructuredBuffer<float2> globalUVs : register(t13, space0);
+StructuredBuffer<MeshDesc> meshDescs : register(t14, space0);
 Texture2D textures[] : register(t30, space0);
 SamplerState tex_sampler : register(s0);
+cbuffer HitGroupData : register(b2, space0) { uint meshDescIndex; }
 #endif
+
+// =============================================================================
+// SHARED DATA STRUCTURES
+// =============================================================================
 
 // Texture channel mask macros (from texture_channel_mask.h)
 #define TEXTURED_PARAM_MASK 0x80000000
 #define IS_TEXTURED_PARAM(x) ((x) & 0x80000000)
 #define GET_TEXTURE_CHANNEL(x) (((x) >> 29) & 0x3)
-#define SET_TEXTURE_CHANNEL(x, c) x |= (c & 0x3) << 29
 #define GET_TEXTURE_ID(x) ((x) & 0x1fffffff)
-#define SET_TEXTURE_ID(x, i) (x |= i & 0x1fffffff)
-
-
 
 // MeshDesc structure for per-mesh metadata (matches HLSL layout)
 struct MeshDesc {
@@ -97,49 +92,72 @@ struct MaterialParams {
     float2 pad;
 };
 
-// Global geometry buffers (matches HLSL layout at registers t10-t14)
-#ifdef VULKAN
-[[vk::binding(10, 0)]]
-StructuredBuffer<float3> globalVertices;
-[[vk::binding(11, 0)]]
-StructuredBuffer<uint3> globalIndices;
-[[vk::binding(12, 0)]]
-StructuredBuffer<float3> globalNormals;
-[[vk::binding(13, 0)]]
-StructuredBuffer<float2> globalUVs;
-[[vk::binding(14, 0)]]
-StructuredBuffer<MeshDesc> meshDescs;
-#else // DXR
-StructuredBuffer<float3> globalVertices : register(t10, space0);
-StructuredBuffer<uint3> globalIndices : register(t11, space0);
-StructuredBuffer<float3> globalNormals : register(t12, space0);
-StructuredBuffer<float2> globalUVs : register(t13, space0);
-StructuredBuffer<MeshDesc> meshDescs : register(t14, space0);
-#endif
-
-// Hit group data for mesh identification
-#ifdef VULKAN
-// Vulkan uses vk::shader_record attribute for per-hit-group data (stored in SBT, not a descriptor)
-[[vk::shader_record]]
-cbuffer HitGroupData
-{
-    uint meshDescIndex;  // Index into global meshDescs buffer
-}
-#else // DXR
-// DXR uses constant buffer binding for hit group local root signature
-cbuffer HitGroupData : register(b2, space0)
-{
-    uint meshDescIndex;  // Index into meshDescs buffer
-}
-#endif
-
 // Primary ray payload (matches HLSL HitInfo structure)
-// Use explicit std430 layout to match Vulkan expectations
 struct Payload
 {
-    float4 color_dist;  // Offset 0: xy=UV coordinates, z=unused, w=ray distance
-    float4 normal;      // Offset 16: xyz=surface normal, w=material_id  
+    float4 color_dist;  // xy=UV coordinates, w=ray distance
+    float4 normal;      // xyz=surface normal, w=material_id  
 };
+
+// =============================================================================
+// MATERIAL TEXTURE SAMPLING UTILITIES
+// =============================================================================
+
+float sample_scalar_texture_param(float param_value, float2 texcoord)
+{
+    const uint encoding = asuint(param_value);
+    if ((encoding & TEXTURED_PARAM_MASK) != 0) {
+        const uint texture_index = encoding & 0x1fffffff;
+        const uint component_index = (encoding >> 29) & 0x3;
+        
+        #ifdef VULKAN
+            return textures[texture_index].SampleLevel(texcoord, 0)[component_index];
+        #else
+            return textures[NonUniformResourceIndex(texture_index)]
+                .SampleLevel(tex_sampler, texcoord, 0)[component_index];
+        #endif
+    }
+    return param_value;
+}
+
+MaterialParams evaluate_material_at_surface(uint mat_id, float2 texcoord)
+{
+    MaterialParams source = material_params[NonUniformResourceIndex(mat_id)];
+    MaterialParams evaluated;
+    
+    // Handle base color (RGB texture or constant)
+    const uint color_encoding = asuint(source.base_color.x);
+    if ((color_encoding & TEXTURED_PARAM_MASK) != 0) {
+        const uint texture_index = color_encoding & 0x1fffffff;
+        #ifdef VULKAN
+            evaluated.base_color = textures[texture_index].SampleLevel(texcoord, 0).xyz;
+        #else
+            evaluated.base_color = textures[NonUniformResourceIndex(texture_index)]
+                .SampleLevel(tex_sampler, texcoord, 0).xyz;
+        #endif
+    } else {
+        evaluated.base_color = source.base_color;
+    }
+    
+    // Evaluate scalar material properties
+    evaluated.metallic = sample_scalar_texture_param(source.metallic, texcoord);
+    evaluated.specular = sample_scalar_texture_param(source.specular, texcoord);
+    evaluated.roughness = sample_scalar_texture_param(source.roughness, texcoord);
+    evaluated.specular_tint = sample_scalar_texture_param(source.specular_tint, texcoord);
+    evaluated.anisotropy = sample_scalar_texture_param(source.anisotropy, texcoord);
+    evaluated.sheen = sample_scalar_texture_param(source.sheen, texcoord);
+    evaluated.sheen_tint = sample_scalar_texture_param(source.sheen_tint, texcoord);
+    evaluated.clearcoat = sample_scalar_texture_param(source.clearcoat, texcoord);
+    evaluated.clearcoat_gloss = sample_scalar_texture_param(source.clearcoat_gloss, texcoord);
+    evaluated.ior = sample_scalar_texture_param(source.ior, texcoord);
+    evaluated.specular_transmission = sample_scalar_texture_param(source.specular_transmission, texcoord);
+    
+    return evaluated;
+}
+
+// =============================================================================
+// RAY TRACING SHADERS
+// =============================================================================
 
 // ========== Ray Generation Shader ==========
 
@@ -181,33 +199,15 @@ void RayGen()
         payload
     );
     
-    // Write result - Both DXR and Vulkan: Process materials in RayGen
+    // Write result - Process materials using unified utility functions
     float3 display_color = payload.color_dist.rgb;  // Miss shader background or UV
     if (payload.color_dist.w > 0) {
-        // Hit something - get material data and process textures  
+        // Hit something - evaluate material at surface
         uint material_id = uint(payload.normal.w);
-        float2 uv = payload.color_dist.xy;
+        float2 surface_uv = payload.color_dist.xy;
         
-        // Unified material processing for both backends
-        MaterialParams p = material_params[NonUniformResourceIndex(material_id)];
-        
-        // Sample base_color (either from texture or material parameter)
-        float3 base_color;
-        
-        const uint mask = asuint(p.base_color.x);
-        if (IS_TEXTURED_PARAM(mask)) {
-            const uint tex_id = GET_TEXTURE_ID(mask);
-            #ifdef VULKAN
-                base_color = textures[(tex_id)].SampleLevel(uv, 0).xyz;
-            #else
-                base_color = textures[NonUniformResourceIndex(tex_id)].SampleLevel(tex_sampler, uv, 0).xyz;
-            #endif
-
-        } else {
-            base_color = p.base_color;
-        }
-        
-        display_color = base_color;
+        MaterialParams mat = evaluate_material_at_surface(material_id, surface_uv);
+        display_color = mat.base_color;
     }
     outputTexture[pixel] = float4(display_color, 1.0);
 }

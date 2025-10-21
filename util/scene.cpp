@@ -978,8 +978,6 @@ void Scene::build_global_buffers()
     uint32_t normalOffset = 0;
     uint32_t uvOffset = 0;
     
-    std::cout << "[Phase 1] Building global buffers (separate arrays)...\n";
-    
     // Build mapping from parameterized_mesh_id -> starting mesh descriptor index
     std::vector<uint32_t> pm_to_mesh_desc_start;
     pm_to_mesh_desc_start.reserve(parameterized_meshes.size());
@@ -1011,18 +1009,6 @@ void Scene::build_global_buffers()
             );
             mesh_descriptors.push_back(desc);
             
-            // Validation output for first 5 geometries
-            if (mesh_descriptors.size() <= 5) {
-                std::cout << "  [MeshDesc " << (mesh_descriptors.size()-1) << "] "
-                          << "vbOff=" << desc.vbOffset << ", "
-                          << "ibOff=" << desc.ibOffset << ", "
-                          << "normOff=" << desc.normalOffset << ", "
-                          << "uvOff=" << desc.uvOffset << ", "
-                          << "numNorm=" << desc.num_normals << ", "
-                          << "numUV=" << desc.num_uvs << ", "
-                          << "matID=" << desc.material_id << "\n";
-            }
-            
             // Append vertices to global array (positions only!)
             for (const auto& v : geom.vertices) {
                 global_vertices.push_back(v);
@@ -1045,13 +1031,6 @@ void Scene::build_global_buffers()
             // Append UVs to global array (separate!)
             for (const auto& uv : geom.uvs) {
                 global_uvs.push_back(uv);
-            }
-            
-            // DIAGNOSTIC: Check if UV count matches vertex count
-            if (geom.uvs.size() != geom.vertices.size() && !geom.uvs.empty()) {
-                std::cout << "  [WARNING] MeshDesc " << (mesh_descriptors.size()-1) 
-                          << ": UV count (" << geom.uvs.size() 
-                          << ") != vertex count (" << geom.vertices.size() << ")\n";
             }
             
             // Update offsets
@@ -1084,42 +1063,5 @@ void Scene::build_global_buffers()
         
         ++matrixID;
     }
-    
-    // Validation output
-    std::cout << "[Phase 1] Global buffers created successfully:\n";
-    std::cout << "  - Vertices (vec3):  " << global_vertices.size() << "\n";
-    std::cout << "  - Indices (uvec3):  " << global_indices.size() << "\n";
-    std::cout << "  - Normals (vec3):   " << global_normals.size() << "\n";
-    std::cout << "  - UVs (vec2):       " << global_uvs.size() << "\n";
-    std::cout << "  - MeshDescs:        " << mesh_descriptors.size() << "\n";
-    std::cout << "  - Instances:        " << geometry_instances.size() << "\n";
-    std::cout << "  - Transforms:       " << transform_matrices.size() << "\n";
-    
-    // Data validation checks
-    if (!mesh_descriptors.empty()) {
-        const auto& first_desc = mesh_descriptors[0];
-        std::cout << "[Phase 1] Data validation:\n";
-        std::cout << "  - First MeshDesc offsets: vb=" << first_desc.vbOffset 
-                  << ", ib=" << first_desc.ibOffset 
-                  << ", norm=" << first_desc.normalOffset 
-                  << ", uv=" << first_desc.uvOffset << "\n";
-        
-        if (!global_vertices.empty()) {
-            std::cout << "  - First vertex: (" 
-                      << global_vertices[0].x << ", "
-                      << global_vertices[0].y << ", "
-                      << global_vertices[0].z << ")\n";
-        }
-        
-        if (!global_indices.empty()) {
-            std::cout << "  - First index triple: (" 
-                      << global_indices[0].x << ", "
-                      << global_indices[0].y << ", "
-                      << global_indices[0].z << ")\n";
-        }
-    }
-    
-    std::cout << "[Phase 1] sizeof(MeshDesc) = " << sizeof(MeshDesc) 
-              << " bytes (expected: 32)\n";
 }
 
