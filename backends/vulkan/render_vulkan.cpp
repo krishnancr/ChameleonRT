@@ -678,6 +678,18 @@ void RenderVulkan::set_scene(const Scene &scene)
                            VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
     }
 
+#ifdef USE_SLANG_COMPILER
+    // Create scene params buffer (contains num_lights for Slang shader)
+    // Slang path uses descriptor binding 7 instead of SBT for num_lights
+    scene_params = vkrt::Buffer::host(
+        *device, sizeof(uint32_t), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    {
+        void *map = scene_params->map();
+        uint32_t num_lights = static_cast<uint32_t>(scene.lights.size());
+        std::memcpy(map, &num_lights, sizeof(uint32_t));
+        scene_params->unmap();
+    }
+
     // ============================================================================
     // Create global geometry buffers from scene data
     // ============================================================================
@@ -687,8 +699,7 @@ void RenderVulkan::set_scene(const Scene &scene)
     // GLSL with VK_EXT_scalar_block_layout can use tightly-packed ArrayStride 12.
     // Therefore, we pad vec3/uvec3 data to vec4/uvec4 when using Slang compiler.
     // ============================================================================
-    
-#ifdef USE_SLANG_COMPILER
+   
     // --- Slang: Pad vec3/uvec3 arrays to vec4/uvec4 (ArrayStride 16) ---
     
     // 1. Global Vertex Buffer (vec3 positions -> padded to vec4)
@@ -735,7 +746,6 @@ void RenderVulkan::set_scene(const Scene &scene)
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
     }
-    
 #else
     // --- GLSL: Use native vec3/uvec3 with scalar block layout (ArrayStride 12) ---
     
@@ -906,6 +916,11 @@ void RenderVulkan::build_raytracing_pipeline()
             .add_binding(
                 6, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
 #endif
+#ifdef USE_SLANG_COMPILER
+            // Scene params (num_lights) at binding 7 - only for Slang path
+            .add_binding(
+                7, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+#endif
             // Global buffer bindings (10-14)
             .add_binding(
                 10, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
@@ -1026,7 +1041,11 @@ void RenderVulkan::build_shader_descriptor_table()
     const std::vector<VkDescriptorPoolSize> pool_sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+#ifdef USE_SLANG_COMPILER
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},  // ViewParams + SceneParams (Slang only)
+#else
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},  // ViewParams only (GLSL uses SBT)
+#endif
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},  // 2 existing + 5 global buffers
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                              std::max(uint32_t(textures.size()), uint32_t(1))}}; // Moved from Set 1
@@ -1070,6 +1089,9 @@ void RenderVulkan::build_shader_descriptor_table()
                        .write_ssbo(desc_set, 5, light_params);
 #ifdef REPORT_RAY_STATS
     updater.write_storage_image(desc_set, 6, ray_stats);
+#endif
+#ifdef USE_SLANG_COMPILER
+    updater.write_ubo(desc_set, 7, scene_params);  // num_lights for Slang shader
 #endif
 
     // DESCRIPTOR FLATTENING: Write textures to Set 0, binding 30 (was Set 1, binding 0)

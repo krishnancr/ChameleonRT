@@ -20,7 +20,7 @@ struct HitGroupParams {
 struct RenderVulkan : RenderBackend {
     std::shared_ptr<vkrt::Device> device;
 
-    std::shared_ptr<vkrt::Buffer> view_param_buf, img_readback_buf, mat_params, light_params;
+    std::shared_ptr<vkrt::Buffer> view_param_buf, img_readback_buf, mat_params, light_params, scene_params;
 
     // Global geometry buffers for all scene data
     std::shared_ptr<vkrt::Buffer> global_vertex_buffer;
