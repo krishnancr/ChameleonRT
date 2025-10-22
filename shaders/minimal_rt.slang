@@ -188,8 +188,9 @@ void RayGen()
         // Initialize RNG for this sample (unique seed per sample)
         LCGRand rng = get_rng(frame_id * samples_per_pixel + s);
         
-        // Generate primary ray (TODO: Add pixel jitter in Task 3.4.3)
-        float2 d = (float2(pixel) + 0.5f) / dims;  // Center of pixel for now
+        // ===== PIXEL JITTER Random sub-pixel offset =====
+        // Uniform jitter in [0, 1) for anti-aliasing 
+        float2 d = (float2(pixel) + float2(lcg_randomf(rng), lcg_randomf(rng))) / dims;
         
         float3 ray_origin = cam_pos.xyz;
         float3 ray_dir = normalize(d.x * cam_du.xyz + d.y * cam_dv.xyz + cam_dir_top_left.xyz);

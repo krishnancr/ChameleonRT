@@ -1,6 +1,6 @@
 # Phase 3: Full BRDF Implementation - Revised Plan
 
-**Status:** ✅ Phase 3.4.2 Complete (Multi-Sampling) → 🎯 Phase 3.4.3 Next (Pixel Jitter)  
+**Status:** ✅ Phase 3.4.3 Complete (Pixel Jitter) → 🎯 Phase 3.4.4 Next (Russian Roulette)  
 **Duration:** 2-3 days remaining  
 **Risk Level:** MEDIUM  
 **Last Updated:** October 22, 2025
@@ -15,9 +15,9 @@
 ✅ Phase 3.3 (COMPLETE)  → Direct lighting with shadow rays
 ✅ Phase 3.4.1 (COMPLETE)→ Indirect lighting loop (global illumination)
 ✅ Phase 3.4.2 (COMPLETE)→ Multi-sample anti-aliasing (SPP loop)
+✅ Phase 3.4.3 (COMPLETE)→ Pixel jitter (uniform random sampling)
 ↓
-🎯 Phase 3.4.3 (NEXT)    → Pixel jitter (tent filter) ⭐ START HERE
-🎯 Phase 3.4.4           → Russian roulette termination
+🎯 Phase 3.4.4 (NEXT)    → Russian roulette termination ⭐ START HERE
 🎯 Phase 3.4.5           → Progressive accumulation
 🎯 Phase 3.4.6           → sRGB conversion
 ↓
@@ -26,7 +26,7 @@
 ✅ Phase 3 COMPLETE      → Feature parity with GLSL/HLSL achieved!
 ```
 
-**Current Position:** You have path tracing with multi-sampling working. Next step is adding pixel jitter (tent filter) for proper anti-aliasing of edges.
+**Current Position:** You have path tracing with multi-sampling and pixel jitter working. Next step is adding Russian roulette termination for unbiased path termination.
 
 ---
 
@@ -1661,29 +1661,33 @@ void RayGen() {
 
 ---
 
-### Task 3.4.3: Pixel Jitter (Tent Filter) ⭐ START HERE
+### Task 3.4.3: Pixel Jitter (Uniform Random Sampling) ✅ COMPLETE
 
-**Status:** NOT STARTED  
+**Status:** ✅ **COMPLETE** (October 22, 2025)  
 **Duration:** 0.25 day  
-**Goal:** Add sub-pixel randomness for better anti-aliasing
+**Goal:** Add sub-pixel randomness for anti-aliasing
 
-#### Reference Code (GLSL - lines 164-168)
+**IMPORTANT:** Despite the PLAN.md title mentioning "tent filter", the actual HLSL/GLSL reference implementation uses **uniform random jitter**. The Slang implementation correctly matches the reference code (1:1 matching requirement).
 
-```glsl
-// Tent filter for better anti-aliasing
-const vec2 d = 2.f * vec2(lcg_randomf(rng), lcg_randomf(rng)) - vec2(1.f);
-const vec2 jitter = vec2(
-    d.x < 0.f ? sqrt(2.f * d.x) - 1.f : 1.f - sqrt(2.f - 2.f * d.x),
-    d.y < 0.f ? sqrt(2.f * d.y) - 1.f : 1.f - sqrt(2.f - 2.f * d.y)
-);
-const vec2 uv = (pixel + 0.5f + jitter * 0.5f) / dims;
+#### Reference Code (HLSL - backends/dxr/render_dxr.hlsl, line 180)
+
+```hlsl
+// Uniform random jitter for anti-aliasing
+const float2 d = (pixel + float2(lcg_randomf(rng), lcg_randomf(rng))) / dims;
 ```
 
-#### Slang Implementation
+#### Reference Code (GLSL - backends/vulkan/raygen.rgen, line 172)
+
+```glsl
+// Uniform random jitter for anti-aliasing
+vec2 d = (pixel + vec2(lcg_randomf(rng), lcg_randomf(rng))) / dims;
+```
+
+#### Slang Implementation ✅
 
 **File:** `shaders/minimal_rt.slang`
 
-**Modification:** Replace center-of-pixel sampling with jittered sampling
+**Modification:** Replace center-of-pixel sampling with uniform random jitter
 
 ```slang
 [shader("raygeneration")]
@@ -1696,40 +1700,34 @@ void RayGen() {
     for (uint s = 0; s < samples_per_pixel; ++s) {
         LCGRand rng = get_rng(frame_id * samples_per_pixel + s);
         
-        // ===== PIXEL JITTER (ADD THIS) =====
-        // Tent filter distribution
-        float2 rand = 2.0f * float2(lcg_randomf(rng), lcg_randomf(rng)) - float2(1.0f);
-        float2 jitter = float2(
-            rand.x < 0.0f ? sqrt(2.0f * rand.x) - 1.0f : 1.0f - sqrt(2.0f - 2.0f * rand.x),
-            rand.y < 0.0f ? sqrt(2.0f * rand.y) - 1.0f : 1.0f - sqrt(2.0f - 2.0f * rand.y)
-        );
-        
-        // Apply jitter
-        float2 d = (pixel + 0.5f + jitter * 0.5f) / dims;
+        // ===== PIXEL JITTER: Uniform random sampling [0, 1) =====
+        float2 d = (float2(pixel) + float2(lcg_randomf(rng), lcg_randomf(rng))) / dims;
         
         // Generate ray
-        RayDesc ray;
-        ray.Origin = cam_pos.xyz;
-        ray.Direction = normalize(d.x * cam_du.xyz + d.y * cam_dv.xyz + cam_dir_top_left.xyz);
+        float3 ray_origin = cam_pos.xyz;
+        float3 ray_dir = normalize(d.x * cam_du.xyz + d.y * cam_dv.xyz + cam_dir_top_left.xyz);
         // ...
     }
 }
 ```
 
-#### Validation (Task 3.4.3)
+#### Validation (Task 3.4.3) ✅
 
-**Test:**
-1. Zoom in on edges (geometry silhouettes)
-2. Compare with/without jitter at low SPP (e.g., 4 SPP)
+**Tests:**
+- ✅ DXR Cornell Box (16 SPP) - Works correctly
+- ✅ Vulkan Cornell Box (16 SPP) - Works correctly
+- ✅ DXR Sponza (16 SPP) - Works correctly
+- ✅ DXR Cornell Box Glossy Floor (16 SPP) - Works correctly
 
 **Success Criteria:**
-- ✅ Edges smoother with jitter
-- ✅ Better gradient quality
+- ✅ Edges smoother with jitter (anti-aliasing working)
+- ✅ Matches HLSL/GLSL reference implementation exactly
 - ✅ No aliasing artifacts
+- ✅ Works on both DXR and Vulkan backends
 
 ---
 
-### Task 3.4.4: Russian Roulette Termination
+### Task 3.4.4: Russian Roulette Termination ⭐ START HERE
 
 **Status:** NOT STARTED  
 **Duration:** 0.5 day  
@@ -1928,7 +1926,7 @@ void RayGen() {
 
 - [x] Task 3.4.1: Indirect lighting loop implemented ✅
 - [x] Task 3.4.2: Multi-sample anti-aliasing working ✅
-- [ ] Task 3.4.3: Pixel jitter (tent filter) implemented
+- [x] Task 3.4.3: Pixel jitter (uniform random sampling) implemented ✅
 - [ ] Task 3.4.4: Russian roulette termination working
 - [ ] Task 3.4.5: Progressive accumulation implemented
 - [ ] Task 3.4.6: sRGB conversion applied
