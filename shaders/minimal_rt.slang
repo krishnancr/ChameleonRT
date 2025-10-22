@@ -181,22 +181,26 @@ void RayGen()
     uint2 pixel = DispatchRaysIndex().xy;
     float2 dims = float2(DispatchRaysDimensions().xy);
     
-    // Initialize RNG for this pixel (TODO: Will be frame_id * samples_per_pixel + s in Task 3.4.2)
-    LCGRand rng = get_rng(frame_id);
-    
-    // Generate primary ray (TODO: Add pixel jitter in Task 3.4.3)
-    float2 d = (float2(pixel) + 0.5f) / dims;  // Center of pixel for now
-    
-    float3 ray_origin = cam_pos.xyz;
-    float3 ray_dir = normalize(d.x * cam_du.xyz + d.y * cam_dv.xyz + cam_dir_top_left.xyz);
-    float t_min = 0.0f;
-    float t_max = 1e20f;
-    
-    // ===== PATH TRACING LOOP (Task 3.4.1) =====
-    int bounce = 0;
+    // ===== MULTI-SAMPLE ANTI-ALIASING  =====
     float3 illum = float3(0.0f);
-    float3 path_throughput = float3(1.0f, 1.0f, 1.0f);
-    DisneyMaterial mat;
+    
+    for (uint s = 0; s < samples_per_pixel; ++s) {
+        // Initialize RNG for this sample (unique seed per sample)
+        LCGRand rng = get_rng(frame_id * samples_per_pixel + s);
+        
+        // Generate primary ray (TODO: Add pixel jitter in Task 3.4.3)
+        float2 d = (float2(pixel) + 0.5f) / dims;  // Center of pixel for now
+        
+        float3 ray_origin = cam_pos.xyz;
+        float3 ray_dir = normalize(d.x * cam_du.xyz + d.y * cam_dv.xyz + cam_dir_top_left.xyz);
+        float t_min = 0.0f;
+        float t_max = 1e20f;
+        
+        // ===== PATH TRACING LOOP =====
+        int bounce = 0;
+        float3 path_throughput = float3(1.0f, 1.0f, 1.0f);
+        float3 sample_illum = float3(0.0f);  // Accumulate illumination for this sample
+        DisneyMaterial mat;
     
     do {
         // Setup ray
@@ -224,7 +228,7 @@ void RayGen()
         
         // Miss? Add sky color and terminate
         if (payload.color_dist.w <= 0.0f) {
-            illum += path_throughput * payload.color_dist.rgb;  // Sky color from Miss shader
+            sample_illum += path_throughput * payload.color_dist.rgb;  // Sky color from Miss shader
             break;
         }
         
@@ -310,7 +314,7 @@ void RayGen()
         }
         
         // Add direct lighting contribution
-        illum += path_throughput * direct_light;
+        sample_illum += path_throughput * direct_light;
         
         // ===== INDIRECT LIGHTING: Sample BRDF for next bounce =====
         float3 w_i;
@@ -338,6 +342,14 @@ void RayGen()
         }
         
     } while (bounce < MAX_PATH_DEPTH);
+    
+        // Accumulate this sample's contribution
+        illum += sample_illum;
+        
+    }  // End of SPP loop
+    
+    // Average all samples
+    illum = illum / float(samples_per_pixel);
     
     // TODO: Add progressive accumulation (Task 3.4.5)
     // TODO: Add sRGB conversion (Task 3.4.6)

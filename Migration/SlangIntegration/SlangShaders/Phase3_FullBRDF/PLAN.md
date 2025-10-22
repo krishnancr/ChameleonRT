@@ -1,6 +1,6 @@
 # Phase 3: Full BRDF Implementation - Revised Plan
 
-**Status:** ✅ Phase 3.3 Complete (Direct Lighting) → 🎯 Phase 3.4 Next (Path Tracing)  
+**Status:** ✅ Phase 3.4.2 Complete (Multi-Sampling) → 🎯 Phase 3.4.3 Next (Pixel Jitter)  
 **Duration:** 2-3 days remaining  
 **Risk Level:** MEDIUM  
 **Last Updated:** October 22, 2025
@@ -13,10 +13,10 @@
 ✅ Phase 3.1 (COMPLETE)  → Module extraction (util, lcg_rng, disney_bsdf, lights)
 ✅ Phase 3.2 (COMPLETE)  → Light buffer integration  
 ✅ Phase 3.3 (COMPLETE)  → Direct lighting with shadow rays
+✅ Phase 3.4.1 (COMPLETE)→ Indirect lighting loop (global illumination)
+✅ Phase 3.4.2 (COMPLETE)→ Multi-sample anti-aliasing (SPP loop)
 ↓
-🎯 Phase 3.4.1 (NEXT)    → Indirect lighting loop (global illumination) ⭐ START HERE
-🎯 Phase 3.4.2           → Multi-sample anti-aliasing (SPP loop)
-🎯 Phase 3.4.3           → Pixel jitter (tent filter)
+🎯 Phase 3.4.3 (NEXT)    → Pixel jitter (tent filter) ⭐ START HERE
 🎯 Phase 3.4.4           → Russian roulette termination
 🎯 Phase 3.4.5           → Progressive accumulation
 🎯 Phase 3.4.6           → sRGB conversion
@@ -26,7 +26,7 @@
 ✅ Phase 3 COMPLETE      → Feature parity with GLSL/HLSL achieved!
 ```
 
-**Current Position:** You have direct lighting working. Next step is adding the path tracing loop for global illumination (color bleeding, inter-reflections).
+**Current Position:** You have path tracing with multi-sampling working. Next step is adding pixel jitter (tent filter) for proper anti-aliasing of edges.
 
 ---
 
@@ -35,9 +35,9 @@
 Implement complete Disney BRDF-based path tracing in Slang with **identical results** to existing HLSL/GLSL implementation. This achieves full feature parity including:
 - Physically-based material evaluation (Disney BRDF) ✅ COMPLETE
 - Direct lighting with shadow rays ✅ COMPLETE
-- Indirect lighting with recursive path tracing (Phase 3.4)
+- Indirect lighting with recursive path tracing ✅ COMPLETE (Phase 3.4.1)
 - Importance sampling for efficiency ✅ COMPLETE (modules ready)
-- Multi-sample anti-aliasing (Phase 3.4)
+- Multi-sample anti-aliasing ✅ COMPLETE (Phase 3.4.2)
 - Progressive accumulation (Phase 3.4)
 
 **Ground Truth:** Your existing `backends/dxr/render_dxr.hlsl` and `backends/vulkan/raygen.rgen`
@@ -1288,9 +1288,9 @@ From analysis of `backends/vulkan/raygen.rgen` and `backends/dxr/render_dxr.hlsl
 
 ---
 
-### Task 3.4.1: Indirect Lighting Loop (Global Illumination) ⭐ START HERE
+### Task 3.4.1: Indirect Lighting Loop (Global Illumination) ✅ COMPLETE
 
-**Status:** NOT STARTED  
+**Status:** ✅ **COMPLETE** (October 22, 2025)  
 **Duration:** 0.5 day  
 **Goal:** Add recursive path tracing in RayGen shader for color bleeding and inter-reflections
 
@@ -1600,9 +1600,9 @@ void RayGen() {
 
 ---
 
-### Task 3.4.2: Multi-Sample Anti-Aliasing (MSAA)
+### Task 3.4.2: Multi-Sample Anti-Aliasing (MSAA) ✅ COMPLETE
 
-**Status:** NOT STARTED  
+**Status:** ✅ **COMPLETE** (October 22, 2025)  
 **Duration:** 0.25 day  
 **Goal:** Accumulate multiple samples per pixel for noise reduction
 
@@ -1661,7 +1661,7 @@ void RayGen() {
 
 ---
 
-### Task 3.4.3: Pixel Jitter (Tent Filter)
+### Task 3.4.3: Pixel Jitter (Tent Filter) ⭐ START HERE
 
 **Status:** NOT STARTED  
 **Duration:** 0.25 day  
@@ -1926,8 +1926,8 @@ void RayGen() {
 
 ### Deliverables (Phase 3.4)
 
-- [ ] Task 3.4.1: Indirect lighting loop implemented
-- [ ] Task 3.4.2: Multi-sample anti-aliasing working
+- [x] Task 3.4.1: Indirect lighting loop implemented ✅
+- [x] Task 3.4.2: Multi-sample anti-aliasing working ✅
 - [ ] Task 3.4.3: Pixel jitter (tent filter) implemented
 - [ ] Task 3.4.4: Russian roulette termination working
 - [ ] Task 3.4.5: Progressive accumulation implemented
