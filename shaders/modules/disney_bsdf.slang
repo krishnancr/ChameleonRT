@@ -382,6 +382,7 @@ float3 sample_disney_brdf(const DisneyMaterial mat, const float3 n,
     const float3 w_o, const float3 v_x, const float3 v_y, inout LCGRand rng,
     out float3 w_i, out float pdf)
 {
+
     int component = 0;
     if (mat.specular_transmission == 0.f) {
         component = int(lcg_randomf(rng) * 3.f);

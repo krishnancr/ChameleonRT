@@ -10,9 +10,9 @@ static const float M_1_PI = 0.318309886183790671538f;
 static const float EPSILON = 0.001f;
 
 // Ray types
-#define PRIMARY_RAY 0
-#define OCCLUSION_RAY 1
-#define MAX_PATH_DEPTH 5
+static const int PRIMARY_RAY = 0;
+static const int OCCLUSION_RAY = 1;
+static const int MAX_PATH_DEPTH = 5;
 
 // Convert linear color value to sRGB
 float linear_to_srgb(float x) {
