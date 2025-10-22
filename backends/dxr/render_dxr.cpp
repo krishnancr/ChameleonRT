@@ -1088,15 +1088,29 @@ void RenderDXR::build_descriptor_heap()
         device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     // Write the SRVs for the textures
-    for (auto &t : textures) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC tex_desc = {0};
-        tex_desc.Format = t.pixel_format();
-        tex_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        tex_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        tex_desc.Texture2D.MipLevels = 1;
-        device->CreateShaderResourceView(t.get(), &tex_desc, heap_handle);
+    // CRITICAL: When textures.empty(), create a null descriptor for t30 to maintain
+    // correct heap offsets. The root signature reserves a slot for t30 even with no
+    // textures, so we must create a descriptor (null or real) to keep t10-t14 aligned.
+    if (textures.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC null_desc = {0};
+        null_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        null_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        null_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        null_desc.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(nullptr, &null_desc, heap_handle);
         heap_handle.ptr +=
             device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    } else {
+        for (auto &t : textures) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC tex_desc = {0};
+            tex_desc.Format = t.pixel_format();
+            tex_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            tex_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            tex_desc.Texture2D.MipLevels = 1;
+            device->CreateShaderResourceView(t.get(), &tex_desc, heap_handle);
+            heap_handle.ptr +=
+                device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        }
     }
 
     // Create SRVs for global buffers at t10-t14
