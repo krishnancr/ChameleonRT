@@ -267,8 +267,8 @@ void RayGen()
         float3 v_z = normal;
         ortho_basis(v_x, v_y, v_z);
         
-        // ===== DIRECT LIGHTING (from Phase 3.3) =====
-        float3 direct_light = float3(0.0f);
+        // ===== DIRECT LIGHTING with MIS (Multiple Importance Sampling) =====
+        float3 illum = float3(0.0f);
         
         // Iterate through all lights
         for (uint light_idx = 0; light_idx < num_lights; ++light_idx) {
@@ -279,20 +279,24 @@ void RayGen()
             float3 light_pos = sample_quad_light_position(light, light_samples);
             
             // Direction to light
-            float3 w_i = light_pos - hit_p;
-            float dist_to_light = length(w_i);
-            w_i = w_i / dist_to_light;
+            float3 light_dir = light_pos - hit_p;
+            float light_dist = length(light_dir);
+            light_dir = light_dir / light_dist;
+            
+            // Compute PDFs for MIS
+            float light_pdf = quad_light_pdf(light, light_pos, hit_p, light_dir);
+            float bsdf_pdf = disney_pdf(mat, v_z, w_o, light_dir, v_x, v_y);
             
             // Trace shadow ray
+            Payload shadow_hit;
+            shadow_hit.color_dist = float4(0, 0, 0, 1);  // w=1 means hit
+            shadow_hit.normal = float4(0, 0, 0, 0);
+            
             RayDesc shadow_ray;
             shadow_ray.Origin = hit_p;
-            shadow_ray.Direction = w_i;
+            shadow_ray.Direction = light_dir;
             shadow_ray.TMin = EPSILON;
-            shadow_ray.TMax = dist_to_light - EPSILON;
-            
-            Payload shadow_payload;
-            shadow_payload.color_dist = float4(0, 0, 0, 1);  // w=1 means hit
-            shadow_payload.normal = float4(0, 0, 0, 0);
+            shadow_ray.TMax = light_dist;
             
             TraceRay(
                 scene,
@@ -302,25 +306,66 @@ void RayGen()
                 1,
                 1,  // Shadow miss shader index
                 shadow_ray,
-                shadow_payload
+                shadow_hit
             );
             
-            // If visible (miss shader sets w < 0), evaluate BRDF
-            if (shadow_payload.color_dist.w < 0) {
-                float3 f = disney_brdf(mat, v_z, w_o, w_i, v_x, v_y);
-                float3 emission = light.emission.rgb;
-                float3 light_contrib = f * emission * abs(dot(w_i, v_z));
-                direct_light += light_contrib;
+            // If visible and PDFs valid, add light sample contribution
+            if (light_pdf >= EPSILON && bsdf_pdf >= EPSILON && shadow_hit.color_dist.w < 0) {
+                float3 bsdf = disney_brdf(mat, v_z, w_o, light_dir, v_x, v_y);
+                float w = power_heuristic(1.0f, light_pdf, 1.0f, bsdf_pdf);
+                illum = bsdf * light.emission.rgb * abs(dot(light_dir, v_z)) * w / light_pdf;
             }
         }
         
         // Add direct lighting contribution
-        sample_illum += path_throughput * direct_light;
+        sample_illum += path_throughput * illum;
         
         // ===== INDIRECT LIGHTING: Sample BRDF for next bounce =====
         float3 w_i;
         float pdf;
         float3 bsdf = sample_disney_brdf(mat, v_z, w_o, v_x, v_y, rng, w_i, pdf);
+        
+        // MIS Strategy 2: Sample BRDF and check if it hits the light
+        for (uint light_idx = 0; light_idx < num_lights; ++light_idx) {
+            QuadLight light = lights[light_idx];
+            
+            float light_dist;
+            float3 light_pos;
+            if (any(bsdf > float3(0.0f)) && pdf >= EPSILON &&
+                quad_intersect(light, hit_p, w_i, light_dist, light_pos))
+            {
+                float light_pdf = quad_light_pdf(light, light_pos, hit_p, w_i);
+                if (light_pdf >= EPSILON) {
+                    float w = power_heuristic(1.0f, pdf, 1.0f, light_pdf);
+                    
+                    // Trace shadow ray
+                    Payload shadow_hit;
+                    shadow_hit.color_dist = float4(0, 0, 0, 1);
+                    shadow_hit.normal = float4(0, 0, 0, 0);
+                    
+                    RayDesc shadow_ray;
+                    shadow_ray.Origin = hit_p;
+                    shadow_ray.Direction = w_i;
+                    shadow_ray.TMin = EPSILON;
+                    shadow_ray.TMax = light_dist;
+                    
+                    TraceRay(
+                        scene,
+                        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                        0xFF,
+                        0,
+                        1,
+                        1,
+                        shadow_ray,
+                        shadow_hit
+                    );
+                    
+                    if (shadow_hit.color_dist.w < 0) {
+                        sample_illum += path_throughput * bsdf * light.emission.rgb * abs(dot(w_i, v_z)) * w / pdf;
+                    }
+                }
+            }
+        }
         
         // Check for path termination BEFORE using pdf
         bool terminate = (pdf <= 0.0f) || all(bsdf == float3(0.0f));
@@ -385,8 +430,22 @@ void RayGen()
 [shader("miss")]
 void Miss(inout Payload payload)
 {
-    // Light blue background to match expected output
-    payload.color_dist = float4(0.2, 0.4, 0.8, -1.0);  // w=-1 indicates miss
+    payload.color_dist.w = -1.0f;  // Indicates miss
+    
+    // Checkered sky pattern (matching HLSL/GLSL)
+    float3 dir = WorldRayDirection();
+    float u = (1.0f + atan2(dir.x, -dir.z) * M_1_PI) * 0.5f;
+    float v = acos(dir.y) * M_1_PI;
+    
+    int check_x = int(u * 10.0f);
+    int check_y = int(v * 10.0f);
+    
+    if (dir.y > -0.1f && (check_x + check_y) % 2 == 0) {
+        payload.color_dist.rgb = float3(0.5f, 0.5f, 0.5f);
+    } else {
+        payload.color_dist.rgb = float3(0.1f, 0.1f, 0.1f);
+    }
+    
     payload.normal = float4(0, 0, 0, 0);
 }
 
