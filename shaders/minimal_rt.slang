@@ -362,11 +362,22 @@ void RayGen()
     // Average all samples
     illum = illum / float(samples_per_pixel);
     
-    // TODO: Add progressive accumulation (Task 3.4.5)
-    // TODO: Add sRGB conversion (Task 3.4.6)
+    // ===== PROGRESSIVE ACCUMULATION (Task 3.4.5) =====
+    // Accumulate across frames for temporal convergence
+    float4 accum_color = accum_buffer[pixel];
+    accum_color = (float4(illum, 1.0) + frame_id * accum_color) / (frame_id + 1);
+    accum_buffer[pixel] = accum_color;
     
-    // For now, write directly
-    outputTexture[pixel] = float4(illum, 1.0f);
+    // ===== sRGB CONVERSION (Task 3.4.6) =====
+    // Convert linear accumulated color to sRGB for display
+    float3 srgb_color = float3(
+        linear_to_srgb(accum_color.r),
+        linear_to_srgb(accum_color.g),
+        linear_to_srgb(accum_color.b)
+    );
+    
+    // Write sRGB-corrected color to output
+    outputTexture[pixel] = float4(srgb_color, 1.0f);
 }
 
 // ========== Miss Shader ==========
