@@ -337,7 +337,17 @@ void RayGen()
             t_max = 1e20f;
             ++bounce;
             
-            // TODO: Add Russian roulette here (Task 3.4.4)
+            // ===== RUSSIAN ROULETTE TERMINATION (Task 3.4.4) =====
+            // Unbiased early path termination based on throughput
+            if (bounce > 3) {
+                float q = max(0.05f, 
+                              1.0f - max(path_throughput.x, 
+                                         max(path_throughput.y, path_throughput.z)));
+                if (lcg_randomf(rng) < q) {
+                    break;  // Terminate path
+                }
+                path_throughput = path_throughput / (1.0f - q);  // Compensate to remain unbiased
+            }
         } else {
             break;  // Terminate path (absorption)
         }
