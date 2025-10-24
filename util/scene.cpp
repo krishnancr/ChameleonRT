@@ -94,6 +94,27 @@ size_t Scene::num_geometries() const
         });
 }
 
+void Scene::compute_bounds(glm::vec3 &min_bound, glm::vec3 &max_bound) const
+{
+    min_bound = glm::vec3(std::numeric_limits<float>::max());
+    max_bound = glm::vec3(std::numeric_limits<float>::lowest());
+    
+    // Iterate through all instances to find world-space bounds
+    for (const auto& instance : instances) {
+        const ParameterizedMesh& pm = parameterized_meshes[instance.parameterized_mesh_id];
+        const Mesh& mesh = meshes[pm.mesh_id];
+        
+        // Transform vertices to world space and update bounds
+        for (const auto& geom : mesh.geometries) {
+            for (const auto& v : geom.vertices) {
+                glm::vec4 world_pos = instance.transform * glm::vec4(v, 1.0f);
+                min_bound = glm::min(min_bound, glm::vec3(world_pos));
+                max_bound = glm::max(max_bound, glm::vec3(world_pos));
+            }
+        }
+    }
+}
+
 void Scene::load_obj(const std::string &file)
 {
     std::cout << "Loading OBJ: " << file << "\n";
@@ -218,15 +239,36 @@ void Scene::load_obj(const std::string &file)
 
     validate_materials();
 
-    // OBJ will not have any lights in it, so just generate one
-    std::cout << "Generating light for OBJ scene\n";
+    // OBJ will not have any lights in it, so generate a bright overhead light
+    // Position it intelligently based on scene bounds
+    glm::vec3 scene_min, scene_max;
+    compute_bounds(scene_min, scene_max);
+    glm::vec3 scene_center = (scene_min + scene_max) * 0.5f;
+    glm::vec3 scene_extents = scene_max - scene_min;
+    
+    std::cout << "Scene bounds: min(" << scene_min.x << ", " << scene_min.y << ", " << scene_min.z 
+              << ") max(" << scene_max.x << ", " << scene_max.y << ", " << scene_max.z << ")\n";
+    std::cout << "Scene height: " << scene_extents.y << "\n";
+    
+    std::cout << "Generating bright overhead area light for OBJ scene\n";
     QuadLight light;
-    light.emission = glm::vec4(20.f);
-    light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
-    light.position = -10.f * light.normal;
+    light.emission = glm::vec4(50.f, 48.f, 45.f, 1.f);  // Warm sunlight color
+    
+    // Position light well above the scene (at 90% of the way to the top + extra margin)
+    float light_height = scene_max.y + scene_extents.y * 0.1f;
+    light.position = glm::vec4(scene_center.x, light_height, scene_center.z, 1.f);
+    light.normal = glm::vec4(0.f, -1.f, 0.f, 0.f);  // Pointing straight down
+    
     ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
-    light.width = 5.f;
-    light.height = 5.f;
+    
+    // Scale light to cover the scene (1.2x the horizontal extent)
+    float light_size = glm::max(scene_extents.x, scene_extents.z) * 0.6f;
+    light.width = light_size;
+    light.height = light_size;
+    
+    std::cout << "Light positioned at height " << light_height 
+              << " with size " << light_size << "x" << light_size << "\n";
+    
     lights.push_back(light);
 }
 
@@ -406,14 +448,35 @@ void Scene::load_gltf(const std::string &fname)
 
     // Does GLTF have lights in the file? If one is missing we should generate one,
     // otherwise we can load them
-    std::cout << "Generating light for GLTF scene\n";
+    // Position it intelligently based on scene bounds
+    glm::vec3 scene_min, scene_max;
+    compute_bounds(scene_min, scene_max);
+    glm::vec3 scene_center = (scene_min + scene_max) * 0.5f;
+    glm::vec3 scene_extents = scene_max - scene_min;
+    
+    std::cout << "Scene bounds: min(" << scene_min.x << ", " << scene_min.y << ", " << scene_min.z 
+              << ") max(" << scene_max.x << ", " << scene_max.y << ", " << scene_max.z << ")\n";
+    std::cout << "Scene height: " << scene_extents.y << "\n";
+    
+    std::cout << "Generating bright overhead area light for GLTF scene\n";
     QuadLight light;
-    light.emission = glm::vec4(20.f);
-    light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
-    light.position = -10.f * light.normal;
+    light.emission = glm::vec4(50.f, 48.f, 45.f, 1.f);  // Warm sunlight color
+    
+    // Position light well above the scene (at 90% of the way to the top + extra margin)
+    float light_height = scene_max.y + scene_extents.y * 0.1f;
+    light.position = glm::vec4(scene_center.x, light_height, scene_center.z, 1.f);
+    light.normal = glm::vec4(0.f, -1.f, 0.f, 0.f);  // Pointing straight down
+    
     ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
-    light.width = 5.f;
-    light.height = 5.f;
+    
+    // Scale light to cover the scene (1.2x the horizontal extent)
+    float light_size = glm::max(scene_extents.x, scene_extents.z) * 0.6f;
+    light.width = light_size;
+    light.height = light_size;
+    
+    std::cout << "Light positioned at height " << light_height 
+              << " with size " << light_size << "x" << light_size << "\n";
+    
     lights.push_back(light);
 }
 

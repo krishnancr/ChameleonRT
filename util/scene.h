@@ -54,6 +54,9 @@ struct Scene {
     size_t total_tris() const;
 
     size_t num_geometries() const;
+    
+    // Compute axis-aligned bounding box of the entire scene
+    void compute_bounds(glm::vec3 &min_bound, glm::vec3 &max_bound) const;
 
 private:
     void load_obj(const std::string &file);
