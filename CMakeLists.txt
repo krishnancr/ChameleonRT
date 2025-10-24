@@ -123,9 +123,6 @@ if(ENABLE_SLANG)
         modules/lights.slang
     )
     
-    # Test shader for Phase 3.1 validation
-    list(APPEND SLANG_SHADER_FILES test_phase3_modules.slang)
-    
     # Create shaders directory in output
     add_custom_command(TARGET chameleonrt POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
