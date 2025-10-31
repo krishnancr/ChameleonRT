@@ -969,9 +969,9 @@ void RenderVulkan::build_raytracing_pipeline()
     }
     
     // Load unified Slang shader source with Vulkan bindings
-    auto shaderSource = chameleonrt::SlangShaderCompiler::loadShaderSource("shaders/minimal_rt.slang");
+    auto shaderSource = chameleonrt::SlangShaderCompiler::loadShaderSource("shaders/unified_render.slang");
     if (!shaderSource) {
-        throw std::runtime_error("Failed to load minimal_rt.slang (unified shader)");
+        throw std::runtime_error("Failed to load unified_render.slang");
     }
     
     // Compile to SPIRV library with VULKAN define for binding selection

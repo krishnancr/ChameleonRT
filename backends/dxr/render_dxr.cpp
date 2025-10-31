@@ -807,7 +807,7 @@ void RenderDXR::build_raytracing_pipeline()
     
     // Get shader path relative to DLL location
     std::filesystem::path dll_dir = get_dll_directory();
-    std::filesystem::path shader_path = dll_dir / "shaders" / "minimal_rt.slang";  // Use the actual Slang shader
+    std::filesystem::path shader_path = dll_dir / "shaders" / "unified_render.slang";  // Use the actual Slang shader
     
     // Load shader source from file
     std::string slang_source;

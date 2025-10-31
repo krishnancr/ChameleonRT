@@ -112,7 +112,7 @@ if(ENABLE_SLANG)
     
     # Add unified shader if any Slang backend is enabled
     if(ENABLE_DXR_SLANG OR ENABLE_VULKAN_SLANG)
-        list(APPEND SLANG_SHADER_FILES minimal_rt.slang)
+        list(APPEND SLANG_SHADER_FILES unified_render.slang)
     endif()
     
     # Phase 3 module files
