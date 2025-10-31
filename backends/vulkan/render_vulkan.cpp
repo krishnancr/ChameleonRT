@@ -976,7 +976,11 @@ void RenderVulkan::build_raytracing_pipeline()
     
     // Compile to SPIRV library with VULKAN define for binding selection
     // Add shaders/ directory to search paths so modules can be found
-    auto result = slangCompiler.compileSlangToSPIRVLibrary(*shaderSource, {"shaders"}, {"VULKAN"});
+    std::vector<std::string> defines = {"VULKAN"};
+#ifdef REPORT_RAY_STATS
+    defines.push_back("REPORT_RAY_STATS");
+#endif
+    auto result = slangCompiler.compileSlangToSPIRVLibrary(*shaderSource, {"shaders"}, defines);
     if (!result) {
         throw std::runtime_error("Failed to compile Slang shader to SPIRV: " + slangCompiler.getLastError());
     }

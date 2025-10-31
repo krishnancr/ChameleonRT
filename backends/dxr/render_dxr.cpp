@@ -820,7 +820,13 @@ void RenderDXR::build_raytracing_pipeline()
     
     // Compile Slang to DXIL using Slang (per-entry-point compilation)
     // Slang handles module import resolution using searchPaths
-    auto result = slangCompiler.compileSlangToDXILLibrary(slang_source, {"shaders"});
+    // NOTE: DXR path uses #else branch (not #ifdef VULKAN) in shader
+    std::vector<std::string> defines;
+#ifdef REPORT_RAY_STATS
+    defines.push_back("REPORT_RAY_STATS");
+#endif
+    
+    auto result = slangCompiler.compileSlangToDXILLibrary(slang_source, {"shaders"}, defines);
     
     if (!result) {
         std::string error = slangCompiler.getLastError();

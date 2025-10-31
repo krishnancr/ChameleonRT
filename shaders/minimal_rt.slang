@@ -16,6 +16,9 @@ import modules.lights;
 [[vk::binding(0, 0)]] RaytracingAccelerationStructure scene;
 [[vk::binding(1, 0)]] RWTexture2D<float4> outputTexture;
 [[vk::binding(2, 0)]] RWTexture2D<float4> accum_buffer;
+#ifdef REPORT_RAY_STATS
+[[vk::binding(6, 0)]] RWTexture2D<uint> ray_stats;
+#endif
 [[vk::binding(3, 0)]] cbuffer ViewParams {
     float4 cam_pos;
     float4 cam_du;  
@@ -41,6 +44,9 @@ import modules.lights;
 RaytracingAccelerationStructure scene : register(t0);
 RWTexture2D<float4> outputTexture : register(u0);
 RWTexture2D<float4> accum_buffer : register(u1);
+#ifdef REPORT_RAY_STATS
+RWTexture2D<uint> ray_stats : register(u2);
+#endif
 cbuffer ViewParams : register(b0) {
     float4 cam_pos;
     float4 cam_du;  
@@ -181,6 +187,10 @@ void RayGen()
     uint2 pixel = DispatchRaysIndex().xy;
     float2 dims = float2(DispatchRaysDimensions().xy);
     
+#ifdef REPORT_RAY_STATS
+    uint ray_count = 0;
+#endif
+    
     // ===== MULTI-SAMPLE ANTI-ALIASING  =====
     float3 illum = float3(0.0f);
     
@@ -226,6 +236,10 @@ void RayGen()
             ray,
             payload
         );
+        
+#ifdef REPORT_RAY_STATS
+        ++ray_count;
+#endif
         
         // Miss? Add sky color and terminate
         if (payload.color_dist.w <= 0.0f) {
@@ -309,6 +323,10 @@ void RayGen()
                 shadow_hit
             );
             
+#ifdef REPORT_RAY_STATS
+            ++ray_count;
+#endif
+            
             // If visible and PDFs valid, add light sample contribution
             if (light_pdf >= EPSILON && bsdf_pdf >= EPSILON && shadow_hit.color_dist.w < 0) {
                 float3 bsdf = disney_brdf(mat, v_z, w_o, light_dir, v_x, v_y);
@@ -359,6 +377,10 @@ void RayGen()
                         shadow_ray,
                         shadow_hit
                     );
+                    
+#ifdef REPORT_RAY_STATS
+                    ++ray_count;
+#endif
                     
                     if (shadow_hit.color_dist.w < 0) {
                         sample_illum += path_throughput * bsdf * light.emission.rgb * abs(dot(w_i, v_z)) * w / pdf;
@@ -423,6 +445,10 @@ void RayGen()
     
     // Write sRGB-corrected color to output
     outputTexture[pixel] = float4(srgb_color, 1.0f);
+    
+#ifdef REPORT_RAY_STATS
+    ray_stats[pixel] = ray_count;
+#endif
 }
 
 // ========== Miss Shader ==========

@@ -327,13 +327,21 @@ std::optional<std::vector<ShaderBlob>> SlangShaderCompiler::compileSlangToDXILLi
         return std::nullopt;
     }
 
-    // Load source as Slang module
+    // Load source as Slang module with preprocessor defines
     Slang::ComPtr<slang::IBlob> diagnosticsBlob;
     Slang::ComPtr<slang::IModule> module;
+    
+    // Prepend defines to source code (simple approach for Phase 1)
+    std::string sourceWithDefines = "";
+    for (const auto& define : defines) {
+        sourceWithDefines += "#define " + define + "\n";
+    }
+    sourceWithDefines += source;
+    
     module = compileSession->loadModuleFromSourceString(
         "shader",
         "shader.slang",
-        source.c_str(),
+        sourceWithDefines.c_str(),
         diagnosticsBlob.writeRef()
     );
 
