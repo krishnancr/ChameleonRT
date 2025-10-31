@@ -12,9 +12,6 @@
 #endif
 #ifdef USE_SLANG_COMPILER
 #include "../../util/slang_shader_compiler.h"
-#include <fstream>
-#include <filesystem>
-#include <Windows.h>  // For GetModuleHandleExA, GetModuleFileNameA
 #endif
 #include "util.h"
 #include <glm/ext.hpp>
@@ -687,48 +684,6 @@ RenderStats RenderDXR::render(const glm::vec3 &pos,
     return stats;
 }
 
-#ifdef USE_SLANG_COMPILER
-namespace {
-    // Get the directory where crt_dxr.dll is located
-    std::filesystem::path get_dll_directory() {
-        char dll_path[MAX_PATH];
-        HMODULE hModule = NULL;
-        
-        // Get handle to this DLL (crt_dxr.dll)
-        GetModuleHandleExA(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            (LPCSTR)&get_dll_directory,  // Any function address in this DLL
-            &hModule
-        );
-        
-        if (hModule == NULL) {
-            throw std::runtime_error("Failed to get DLL module handle");
-        }
-        
-        // Get full path to DLL
-        if (GetModuleFileNameA(hModule, dll_path, MAX_PATH) == 0) {
-            throw std::runtime_error("Failed to get DLL path");
-        }
-        
-        // Return parent directory
-        std::filesystem::path dll_file_path(dll_path);
-        return dll_file_path.parent_path();
-    }
-    
-    // Load shader source from file
-    std::string load_shader_source(const std::filesystem::path& shader_path) {
-        std::ifstream file(shader_path);
-        if (!file.is_open()) {
-            throw std::runtime_error("Failed to open shader file: " + shader_path.string());
-        }
-        
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        return buffer.str();
-    }
-}
-#endif // USE_SLANG_COMPILER
-
 void RenderDXR::create_device_objects()
 {
     device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
@@ -791,36 +746,19 @@ void RenderDXR::create_device_objects()
     // Buffer to readback query results in to
     query_resolve_buffer = dxr::Buffer::readback(
         device.Get(), sizeof(uint64_t) * 2, D3D12_RESOURCE_STATE_COPY_DEST);
-
-#ifdef USE_SLANG_COMPILER
-    // Initialize Slang shader compiler for Phase 1.3 RT pipeline
-    if (!slangCompiler.isValid()) {
-        throw std::runtime_error("Failed to initialize Slang shader compiler");
-    }
-#endif
 }
 
 void RenderDXR::build_raytracing_pipeline()
 {
 #ifdef USE_SLANG_COMPILER
-    // Use Slang-compiled RT shaders if available
-    
-    // Get shader path relative to DLL location
-    std::filesystem::path dll_dir = get_dll_directory();
-    std::filesystem::path shader_path = dll_dir / "shaders" / "minimal_rt.slang";  // Use the actual Slang shader
-    
-    // Load shader source from file
-    std::string slang_source;
-    try {
-        slang_source = load_shader_source(shader_path);
-    } catch (const std::exception& e) {
-        std::cerr << "[Slang] ERROR loading shader: " << e.what() << std::endl;
-        throw;
+    // Load and compile Slang shader using relative path
+    auto slang_source_opt = chameleonrt::SlangShaderCompiler::loadShaderSource("shaders/unified_render.slang");
+    if (!slang_source_opt) {
+        throw std::runtime_error("Failed to load shaders/unified_render.slang");
     }
+    std::string slang_source = *slang_source_opt;
     
-    // Compile Slang to DXIL using Slang (per-entry-point compilation)
-    // Slang handles module import resolution using searchPaths
-    // NOTE: DXR path uses #else branch (not #ifdef VULKAN) in shader
+    // Compile Slang to DXIL library
     std::vector<std::string> defines;
 #ifdef REPORT_RAY_STATS
     defines.push_back("REPORT_RAY_STATS");

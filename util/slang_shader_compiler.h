@@ -50,14 +50,16 @@ struct ShaderBlob {
 /**
  * Slang shader compiler utility
  * 
- * Provides unified interface for compiling shaders through Slang:
- * - Phase 1: Pass-through (HLSL→DXIL, GLSL→SPIRV)
- * - Phase 2: Slang language (Slang→DXIL/SPIRV/Metal)
+ * Provides unified interface for compiling Slang shaders to multiple targets.
+ * Currently supports:
+ * - Slang → DXIL (DirectX Ray Tracing)
+ * - Slang → SPIRV (Vulkan Ray Tracing)
+ * - Slang → Metal (EXPERIMENTAL/UNTESTED)
  * 
  * Usage:
  *   SlangShaderCompiler compiler;
- *   auto blob = compiler.compileHLSLToDXIL(hlslSource, "main", ShaderStage::Vertex);
- *   // Use blob->bytecode in D3D12 pipeline creation
+ *   auto blobs = compiler.compileSlangToDXILLibrary(slangSource);
+ *   // Use blobs[i].bytecode in D3D12 ray tracing pipeline
  */
 class SlangShaderCompiler {
 public:
@@ -68,47 +70,13 @@ public:
     SlangShaderCompiler(const SlangShaderCompiler&) = delete;
     SlangShaderCompiler& operator=(const SlangShaderCompiler&) = delete;
     
-    // === PHASE 1: Pass-through compilation ===
-    
     /**
-     * Compile HLSL to DXIL (for D3D12)
-     * @param source HLSL shader source code
-     * @param entryPoint Entry point function name
-     * @param stage Shader stage (vertex, fragment, raygen, etc.)
-     * @param searchPaths Directories to search for #include files (optional)
-     * @param defines Preprocessor defines (optional)
-     * @return Compiled shader blob or nullopt on failure
-     */
-    std::optional<ShaderBlob> compileHLSLToDXIL(
-        const std::string& source,
-        const std::string& entryPoint,
-        ShaderStage stage,
-        const std::vector<std::string>& searchPaths = {},
-        const std::vector<std::string>& defines = {}
-    );
-    
-    /**
-     * Compile HLSL to DXIL Library (for DXR - multiple entry points)
-     * This compiles each entry point separately using getEntryPointCode()
-     * following the GFX layer pattern from Slang's tools/gfx/renderer-shared.cpp
-     * @param source HLSL shader source code with multiple entry points
-     * @param searchPaths Directories to search for #include files (optional)
+     * Compile Slang to DXIL Library (for DirectX Ray Tracing)
+     * Compiles all ray tracing entry points (RayGen, Miss, ShadowMiss, ClosestHit)
+     * @param source Slang shader source code with multiple entry points
+     * @param searchPaths Directories to search for imported modules (optional)
      * @param defines Preprocessor defines (optional)
      * @return Vector of compiled shader blobs (one per entry point) or nullopt on failure
-     */
-    std::optional<std::vector<ShaderBlob>> compileHLSLToDXILLibrary(
-        const std::string& source,
-        const std::vector<std::string>& searchPaths = {},
-        const std::vector<std::string>& defines = {}
-    );
-    
-    /**
-     * Compile Slang to DXIL Library (for DXR - multiple entry points)
-     * This compiles the entire shader library as a single DXIL library
-     * @param source Slang shader source code with multiple entry points
-     * @param searchPaths Directories to search for #include files (optional)
-     * @param defines Preprocessor defines (optional)
-     * @return Vector of compiled shader blobs (single library blob) or nullopt on failure
      */
     std::optional<std::vector<ShaderBlob>> compileSlangToDXILLibrary(
         const std::string& source,
@@ -117,12 +85,10 @@ public:
     );
     
     /**
-     * Compile Slang to SPIRV Library (for Vulkan RT - multiple entry points)
-     * This compiles the entire shader library as a single SPIRV collection
-     * Each entry point is compiled separately and returned as individual blobs
-     * 
+     * Compile Slang to SPIRV Library (for Vulkan Ray Tracing)
+     * Compiles all ray tracing entry points (RayGen, Miss, ShadowMiss, ClosestHit)
      * @param source Slang shader source code containing multiple entry points
-     * @param searchPaths Directories to search for #include files (optional)
+     * @param searchPaths Directories to search for imported modules (optional)
      * @param defines Preprocessor defines (optional)
      * @return Vector of compiled shader blobs (one per entry point) or nullopt on failure
      */
@@ -133,64 +99,11 @@ public:
     );
     
     /**
-     * Compile GLSL to SPIRV (for Vulkan)
-     * @param source GLSL shader source code
-     * @param entryPoint Entry point function name
-     * @param stage Shader stage
-     * @param searchPaths Directories to search for #include files (optional)
-     * @param defines Preprocessor defines (optional)
-     * @return Compiled shader blob or nullopt on failure
-     */
-    std::optional<ShaderBlob> compileGLSLToSPIRV(
-        const std::string& source,
-        const std::string& entryPoint,
-        ShaderStage stage,
-        const std::vector<std::string>& searchPaths = {},
-        const std::vector<std::string>& defines = {}
-    );
-    
-    // === PHASE 2: Slang language compilation ===
-    
-    /**
-     * Compile Slang to DXIL
+     * Compile Slang to Metal (EXPERIMENTAL - NOT TESTED)
      * @param source Slang shader source code
      * @param entryPoint Entry point function name
      * @param stage Shader stage
-     * @param searchPaths Directories to search for #include files (optional)
-     * @param defines Preprocessor defines (optional)
-     * @return Compiled shader blob or nullopt on failure
-     */
-    std::optional<ShaderBlob> compileSlangToDXIL(
-        const std::string& source,
-        const std::string& entryPoint,
-        ShaderStage stage,
-        const std::vector<std::string>& searchPaths = {},
-        const std::vector<std::string>& defines = {}
-    );
-    
-    /**
-     * Compile Slang to SPIRV
-     * @param source Slang shader source code
-     * @param entryPoint Entry point function name
-     * @param stage Shader stage
-     * @param searchPaths Directories to search for #include files (optional)
-     * @param defines Preprocessor defines (optional)
-     * @return Compiled shader blob or nullopt on failure
-     */
-    std::optional<ShaderBlob> compileSlangToSPIRV(
-        const std::string& source,
-        const std::string& entryPoint,
-        ShaderStage stage,
-        const std::vector<std::string>& searchPaths = {},
-        const std::vector<std::string>& defines = {}
-    );
-    
-    /**
-     * Compile Slang to Metal
-     * @param source Slang shader source code
-     * @param entryPoint Entry point function name
-     * @param stage Shader stage
-     * @param searchPaths Directories to search for #include files (optional)
+     * @param searchPaths Directories to search for imported modules (optional)
      * @param defines Preprocessor defines (optional)
      * @return Compiled shader blob or nullopt on failure
      */
@@ -201,8 +114,6 @@ public:
         const std::vector<std::string>& searchPaths = {},
         const std::vector<std::string>& defines = {}
     );
-    
-    // === Utility functions ===
     
     /**
      * Load shader source from file
@@ -226,31 +137,6 @@ public:
 private:
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     std::string lastError;
-    
-    /**
-     * Internal compilation implementation
-     * All public compile functions delegate to this
-     */
-    std::optional<ShaderBlob> compileInternal(
-        const std::string& source,
-        const std::string& entryPoint,
-        ShaderStage stage,
-        SlangSourceLanguage sourceLanguage,
-        SlangCompileTarget targetFormat,
-        const std::vector<std::string>& searchPaths,
-        const std::vector<std::string>& defines
-    );
-    
-    /**
-     * Convert ShaderStage enum to Slang stage
-     */
-    SlangStage toSlangStage(ShaderStage stage);
-    
-    /**
-     * Extract reflection data from compiled program
-     * (Future: populate ShaderBlob::bindings)
-     */
-    bool extractReflection(slang::IComponentType* program, ShaderBlob& blob);
 };
 
 } // namespace chameleonrt
