@@ -1,7 +1,6 @@
 // Unified minimal ray tracing shader - works for both DXR and Vulkan
-// Phase 2: Textured materials with consolidated bindings
 
-// Import Phase 3.1 modules (available but not used yet in Phase 2)
+// Import modules
 import modules.util;
 import modules.lcg_rng;
 import modules.disney_bsdf;

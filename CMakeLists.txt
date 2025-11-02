@@ -115,7 +115,7 @@ if(ENABLE_SLANG)
         list(APPEND SLANG_SHADER_FILES unified_render.slang)
     endif()
     
-    # Phase 3 module files
+    # module files
     set(SLANG_MODULE_FILES
         modules/util.slang
         modules/lcg_rng.slang

@@ -46,8 +46,6 @@ struct Instance {
     Instance() = default;
 };
 
-// Phase 2A.1: Global buffer structures
-// PHASE 1: Mesh descriptor matching shader structure EXACTLY
 // Must match render_dxr.hlsl MeshDesc (32 bytes)
 struct MeshDesc {
     uint32_t vbOffset;      // Offset into globalVertices (float3 array)

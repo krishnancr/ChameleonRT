@@ -24,7 +24,7 @@ struct RenderDXR : RenderBackend {
     dxr::Buffer view_param_buf, img_readback_buf, instance_buf, material_param_buf, light_buf,
         ray_stats_readback_buf;
 
-    // Phase 2: Global buffers (for shader access)
+    // Global buffers (for shader access)
     dxr::Buffer global_vertex_buffer;
     dxr::Buffer global_index_buffer;
     dxr::Buffer global_normal_buffer;
@@ -32,7 +32,7 @@ struct RenderDXR : RenderBackend {
     dxr::Buffer mesh_desc_buffer;
     dxr::Buffer instance_to_mesh_desc_buffer;  // Maps InstanceID to MeshDesc index
     
-    // Phase 3.2: Track buffer sizes for SRV creation
+    // Track buffer sizes for SRV creation
     size_t global_vertex_count = 0;
     size_t global_index_count = 0;
     size_t global_normal_count = 0;

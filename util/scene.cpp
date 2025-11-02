@@ -65,7 +65,6 @@ Scene::Scene(const std::string &fname, MaterialMode material_mode)
         throw std::runtime_error("Unsupported file " + fname);
     }
     
-    // Phase 2A.1: Build global buffers after scene is loaded
     build_global_buffers();
 }
 
@@ -960,7 +959,6 @@ void Scene::validate_materials()
     }
 }
 
-// PHASE 1: Build global buffers from per-geometry data
 // Separate arrays to match shader structure EXACTLY
 void Scene::build_global_buffers()
 {

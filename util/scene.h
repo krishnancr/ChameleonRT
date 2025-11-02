@@ -31,7 +31,7 @@ struct Scene {
     uint32_t samples_per_pixel = 1;
     MaterialMode material_mode = MaterialMode::DEFAULT;
 
-    // PHASE 1: Global buffers for GPU upload (matching shader structure EXACTLY)
+    // Global buffers for GPU upload (matching shader structure EXACTLY)
     // Separate arrays to match shader layout (not merged Vertex struct)
     std::vector<glm::vec3> global_vertices;       // All vertex positions concatenated
     std::vector<glm::uvec3> global_indices;       // All indices concatenated (as uvec3)
