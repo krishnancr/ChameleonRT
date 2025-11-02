@@ -1,8 +1,8 @@
 // Light sampling functions
 // Direct port from backends/dxr/lights.hlsl and backends/vulkan/lights.glsl
 
-#ifndef LIGHTS_SLSL
-#define LIGHTS_SLSL
+#ifndef LIGHTS_SLANG
+#define LIGHTS_SLANG
 
 import util;
 

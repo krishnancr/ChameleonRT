@@ -465,8 +465,6 @@ void Miss(inout Payload payload)
     int check_x = int(u * 10.0f);
     int check_y = int(v * 10.0f);
     
-    // Optimization 1 ONLY: Removed payload.normal write (matches HLSL/GLSL - they don't write it)
-    // Optimization 2 REVERTED: Use explicit float3 constructor (testing if scalar broadcast caused regression)
     if (dir.y > -0.1f && (check_x + check_y) % 2 == 0) {
         payload.color_dist.rgb = float3(0.5f, 0.5f, 0.5f);
     } else {
