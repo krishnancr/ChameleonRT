@@ -54,7 +54,8 @@ StructuredBuffer<MaterialParams> material_params : register(t1);
 
 StructuredBuffer<QuadLight> lights : register(t2);
 
-Texture2D textures[] : register(t3);
+// Unbounded texture array - moved to t30 to avoid conflict with global buffers at t10-t14
+Texture2D textures[] : register(t30, space0);
 SamplerState tex_sampler : register(s0);
 
 float textured_scalar_param(const float x, in const float2 uv) {
@@ -277,52 +278,90 @@ void ShadowMiss(inout OcclusionHitInfo occlusion : SV_RayPayload) {
     occlusion.hit = 0;
 }
 
-// Per-mesh parameters for the closest hit
-StructuredBuffer<float3> vertices : register(t0, space1);
-StructuredBuffer<uint3> indices : register(t1, space1);
-StructuredBuffer<float3> normals : register(t2, space1);
-StructuredBuffer<float2> uvs : register(t3, space1);
+// ============================================================================
+// Global Buffer Declarations
+// ============================================================================
+// Global buffers for all scene geometry (space0, registers t10-t14)
+// Data layout: separate arrays for vertices, indices, normals, UVs
 
-cbuffer MeshData : register(b0, space1) {
-    uint32_t num_normals;
-    uint32_t num_uvs;
-    uint32_t material_id;
+// MeshDesc structure for per-mesh metadata
+struct MeshDesc {
+    uint32_t vbOffset;      // Offset into globalVertices
+    uint32_t ibOffset;      // Offset into globalIndices  
+    uint32_t normalOffset;  // Offset into globalNormals
+    uint32_t uvOffset;      // Offset into globalUVs
+    uint32_t num_normals;   // Number of normals for this mesh
+    uint32_t num_uvs;       // Number of UVs for this mesh
+    uint32_t material_id;   // Material ID for this mesh
+    uint32_t pad;           // Padding to 32 bytes
+};
+
+// Global buffers (space0, registers t10-t14)
+// NOTE: Moved unbounded texture array from t3 to t30 to free up t10-t14 for global buffers
+StructuredBuffer<float3> globalVertices : register(t10, space0);
+StructuredBuffer<uint3> globalIndices : register(t11, space0);
+StructuredBuffer<float3> globalNormals : register(t12, space0);
+StructuredBuffer<float2> globalUVs : register(t13, space0);
+StructuredBuffer<MeshDesc> meshDescs : register(t14, space0);
+
+// Local root signature parameter (SPACE 0 for Slang compatibility)
+// Using b2 to avoid conflict with ViewParams (b0) and SceneParams (b1)
+cbuffer HitGroupData : register(b2, space0) {
+    uint32_t meshDescIndex;  // Index into meshDescs buffer
 }
+
+// ============================================================================
+// ClosestHit Shader
+// ============================================================================
 
 [shader("closesthit")] 
 void ClosestHit(inout HitInfo payload, Attributes attrib) {
-    uint3 idx = indices[NonUniformResourceIndex(PrimitiveIndex())];
-
-    float3 va = vertices[NonUniformResourceIndex(idx.x)];
-    float3 vb = vertices[NonUniformResourceIndex(idx.y)];
-    float3 vc = vertices[NonUniformResourceIndex(idx.z)];
+    // Use meshDescIndex from SBT to identify which geometry was hit
+    // InstanceID() returns instance index (TLAS), but we need geometry index (BLAS)
+    // Since GeometryIndex() is unavailable in SM 6.3, we pass meshDescIndex via SBT
+    const uint32_t meshID = meshDescIndex;
+    
+    // Load mesh descriptor
+    MeshDesc mesh = meshDescs[NonUniformResourceIndex(meshID)];
+    
+    // Load indices from global buffer (with offset)
+    uint3 idx = globalIndices[NonUniformResourceIndex(mesh.ibOffset + PrimitiveIndex())];
+    
+    // CRITICAL: idx contains GLOBAL vertex indices (already offset by vbOffset during build)
+    // So we use idx directly for vertices, but need LOCAL indices for UVs/normals
+    
+    // Load vertices from global buffer (NO additional offset - idx is already global!)
+    float3 va = globalVertices[NonUniformResourceIndex(idx.x)];
+    float3 vb = globalVertices[NonUniformResourceIndex(idx.y)];
+    float3 vc = globalVertices[NonUniformResourceIndex(idx.z)];
     float3 ng = normalize(cross(vb - va, vc - va));
 
     float3 n = ng;
-    // TODO per-vertex normals seems to give some pretty bad silhouetting,
-    // even on some models which do seem well tesselated?
-    // Implement shadow/bump terminator fix?
+    // Per-vertex normals (can be enabled if needed)
+    uint3 local_vertex_idx = idx - uint3(mesh.vbOffset, mesh.vbOffset, mesh.vbOffset);
 #if 0
-    if (num_normals > 0) {
-        float3 na = normals[NonUniformResourceIndex(idx.x)];
-        float3 nb = normals[NonUniformResourceIndex(idx.y)];
-        float3 nc = normals[NonUniformResourceIndex(idx.z)];
+    if (mesh.num_normals > 0) {
+        float3 na = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.x)];
+        float3 nb = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.y)];
+        float3 nc = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.z)];
         n = normalize((1.f - attrib.bary.x - attrib.bary.y) * na
                 + attrib.bary.x * nb + attrib.bary.y * nc);
     }
 #endif
 
+    // Convert global vertex indices to local indices for UV lookup
     float2 uv = float2(0, 0);
-    if (num_uvs > 0) {
-        float2 uva = uvs[NonUniformResourceIndex(idx.x)];
-        float2 uvb = uvs[NonUniformResourceIndex(idx.y)];
-        float2 uvc = uvs[NonUniformResourceIndex(idx.z)];
+    if (mesh.num_uvs > 0) {
+        float2 uva = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.x)];
+        float2 uvb = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.y)];
+        float2 uvc = globalUVs[NonUniformResourceIndex(mesh.uvOffset + local_vertex_idx.z)];
         uv = (1.f - attrib.bary.x - attrib.bary.y) * uva
             + attrib.bary.x * uvb + attrib.bary.y * uvc;
     }
 
     payload.color_dist = float4(uv, 0, RayTCurrent());
     float3x3 inv_transp = float3x3(WorldToObject4x3()[0], WorldToObject4x3()[1], WorldToObject4x3()[2]);
-    payload.normal = float4(normalize(mul(inv_transp, n)), material_id);
+    payload.normal = float4(normalize(mul(inv_transp, n)), mesh.material_id);
 }
+
 

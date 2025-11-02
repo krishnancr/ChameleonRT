@@ -73,12 +73,7 @@ Temporary Items
 .ninja_log
 
 ### VisualStudioCode ###
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-!.vscode/*.code-snippets
+.vscode/
 
 # Local History for Visual Studio Code
 .history/
@@ -237,7 +232,7 @@ $tf/
 
 # Guidance Automation Toolkit
 *.gpState
-
+.specstory*
 # ReSharper is a .NET coding add-in
 _ReSharper*/
 *.[Rr]e[Ss]harper

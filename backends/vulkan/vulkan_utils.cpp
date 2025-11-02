@@ -324,11 +324,17 @@ void Device::make_logical_device(const std::vector<std::string> &extensions)
     device_desc_features.descriptorBindingVariableDescriptorCount = true;
     device_desc_features.shaderSampledImageArrayNonUniformIndexing = true;
 
+    // Enable scalar block layout for tightly packed buffers (uvec3 indices)
+    VkPhysicalDeviceScalarBlockLayoutFeatures scalar_layout_features = {};
+    scalar_layout_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+    scalar_layout_features.scalarBlockLayout = true;
+    scalar_layout_features.pNext = &device_desc_features;
+
     VkPhysicalDeviceBufferDeviceAddressFeatures device_buf_addr_features = {};
     device_buf_addr_features.sType =
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
     device_buf_addr_features.bufferDeviceAddress = true;
-    device_buf_addr_features.pNext = &device_desc_features;
+    device_buf_addr_features.pNext = &scalar_layout_features;
 
     VkPhysicalDeviceAccelerationStructureFeaturesKHR as_features = {};
     as_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
@@ -344,6 +350,10 @@ void Device::make_logical_device(const std::vector<std::string> &extensions)
     VkPhysicalDeviceFeatures2 device_features = {};
     device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     device_features.pNext = &rt_pipeline_features;
+    
+    // Enable storage image features required for Slang-generated SPIRV
+    device_features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
+    device_features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
     std::vector<const char *> device_extensions = {
         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,

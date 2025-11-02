@@ -64,6 +64,8 @@ Scene::Scene(const std::string &fname, MaterialMode material_mode)
         std::cout << "Unsupported file '" << fname << "'\n";
         throw std::runtime_error("Unsupported file " + fname);
     }
+    
+    build_global_buffers();
 }
 
 size_t Scene::unique_tris() const
@@ -956,3 +958,108 @@ void Scene::validate_materials()
         }
     }
 }
+
+// Separate arrays to match shader structure EXACTLY
+void Scene::build_global_buffers()
+{
+    // Clear previous data
+    global_vertices.clear();
+    global_indices.clear();
+    global_normals.clear();
+    global_uvs.clear();
+    mesh_descriptors.clear();
+    geometry_instances.clear();
+    transform_matrices.clear();
+    
+    uint32_t vertexOffset = 0;
+    uint32_t indexOffset = 0;
+    uint32_t normalOffset = 0;
+    uint32_t uvOffset = 0;
+    
+    // Build mapping from parameterized_mesh_id -> starting mesh descriptor index
+    std::vector<uint32_t> pm_to_mesh_desc_start;
+    pm_to_mesh_desc_start.reserve(parameterized_meshes.size());
+    
+    // For each parameterized mesh (mesh + material assignments)
+    for (const auto& pm : parameterized_meshes) {
+        pm_to_mesh_desc_start.push_back(static_cast<uint32_t>(mesh_descriptors.size()));
+        
+        const Mesh& mesh = meshes[pm.mesh_id];
+        
+        // For each geometry in the mesh
+        for (size_t geom_idx = 0; geom_idx < mesh.geometries.size(); ++geom_idx) {
+            const Geometry& geom = mesh.geometries[geom_idx];
+            
+            // Get material ID for this geometry
+            uint32_t materialID = (geom_idx < pm.material_ids.size()) 
+                                  ? pm.material_ids[geom_idx] 
+                                  : 0;
+            
+            // Create mesh descriptor (matching shader structure)
+            MeshDesc desc(
+                vertexOffset,                                    // vbOffset
+                indexOffset,                                     // ibOffset
+                normalOffset,                                    // normalOffset
+                uvOffset,                                        // uvOffset
+                static_cast<uint32_t>(geom.normals.size()),    // num_normals
+                static_cast<uint32_t>(geom.uvs.size()),        // num_uvs
+                materialID                                       // material_id
+            );
+            mesh_descriptors.push_back(desc);
+            
+            // Append vertices to global array (positions only!)
+            for (const auto& v : geom.vertices) {
+                global_vertices.push_back(v);
+            }
+            
+            // Append indices to global array (as uvec3, adjusted by vertex offset)
+            for (const auto& tri : geom.indices) {
+                global_indices.push_back(glm::uvec3(
+                    tri.x + vertexOffset,
+                    tri.y + vertexOffset,
+                    tri.z + vertexOffset
+                ));
+            }
+            
+            // Append normals to global array (separate!)
+            for (const auto& n : geom.normals) {
+                global_normals.push_back(n);
+            }
+            
+            // Append UVs to global array (separate!)
+            for (const auto& uv : geom.uvs) {
+                global_uvs.push_back(uv);
+            }
+            
+            // Update offsets
+            vertexOffset += static_cast<uint32_t>(geom.vertices.size());
+            indexOffset += static_cast<uint32_t>(geom.indices.size());
+            normalOffset += static_cast<uint32_t>(geom.normals.size());
+            uvOffset += static_cast<uint32_t>(geom.uvs.size());
+        }
+    }
+    
+    // Build geometry instance data (for TLAS)
+    uint32_t matrixID = 0;
+    for (const auto& instance : instances) {
+        const ParameterizedMesh& pm = parameterized_meshes[instance.parameterized_mesh_id];
+        const Mesh& mesh = meshes[pm.mesh_id];
+        
+        // Add transform matrix
+        transform_matrices.push_back(instance.transform);
+        
+        // Get starting mesh descriptor index for this parameterized mesh
+        uint32_t mesh_desc_start = pm_to_mesh_desc_start[instance.parameterized_mesh_id];
+        
+        // One GeometryInstanceData per geometry in the mesh
+        for (size_t geom_idx = 0; geom_idx < mesh.geometries.size(); ++geom_idx) {
+            uint32_t meshDescID = mesh_desc_start + static_cast<uint32_t>(geom_idx);
+            
+            GeometryInstanceData instData(meshDescID, matrixID, 0);
+            geometry_instances.push_back(instData);
+        }
+        
+        ++matrixID;
+    }
+}
+

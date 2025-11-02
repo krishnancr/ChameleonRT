@@ -45,3 +45,32 @@ struct Instance {
 
     Instance() = default;
 };
+
+// Must match render_dxr.hlsl MeshDesc (32 bytes)
+struct MeshDesc {
+    uint32_t vbOffset;      // Offset into globalVertices (float3 array)
+    uint32_t ibOffset;      // Offset into globalIndices (uint3 array)
+    uint32_t normalOffset;  // Offset into globalNormals (float3 array)
+    uint32_t uvOffset;      // Offset into globalUVs (float2 array)
+    uint32_t num_normals;   // Number of normals for this mesh (0 if none)
+    uint32_t num_uvs;       // Number of UVs for this mesh (0 if none)
+    uint32_t material_id;   // Material ID for this mesh
+    uint32_t pad;           // Padding to 32 bytes
+    
+    MeshDesc() = default;
+    MeshDesc(uint32_t vb, uint32_t ib, uint32_t no, uint32_t uv, 
+             uint32_t nn, uint32_t nu, uint32_t mat)
+        : vbOffset(vb), ibOffset(ib), normalOffset(no), uvOffset(uv),
+          num_normals(nn), num_uvs(nu), material_id(mat), pad(0) {}
+};
+
+// Geometry instance data (for TLAS instances)
+struct GeometryInstanceData {
+    uint32_t meshID;        // Index into MeshDesc array
+    uint32_t matrixID;      // Index into transform matrix array
+    uint32_t flags;         // Instance flags (e.g., double-sided)
+    
+    GeometryInstanceData() = default;
+    GeometryInstanceData(uint32_t mesh, uint32_t mat, uint32_t f = 0)
+        : meshID(mesh), matrixID(mat), flags(f) {}
+};

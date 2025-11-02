@@ -31,6 +31,19 @@ struct Scene {
     uint32_t samples_per_pixel = 1;
     MaterialMode material_mode = MaterialMode::DEFAULT;
 
+    // Global buffers for GPU upload (matching shader structure EXACTLY)
+    // Separate arrays to match shader layout (not merged Vertex struct)
+    std::vector<glm::vec3> global_vertices;       // All vertex positions concatenated
+    std::vector<glm::uvec3> global_indices;       // All indices concatenated (as uvec3)
+    std::vector<glm::vec3> global_normals;        // All normals concatenated
+    std::vector<glm::vec2> global_uvs;            // All UVs concatenated
+    std::vector<MeshDesc> mesh_descriptors;       // Metadata per geometry
+    std::vector<GeometryInstanceData> geometry_instances; // Metadata per instance
+    std::vector<glm::mat4> transform_matrices;    // Transform per instance
+    
+    // Helper function to build global buffers
+    void build_global_buffers();
+
     Scene(const std::string &fname, MaterialMode material_mode);
     Scene() = default;
 

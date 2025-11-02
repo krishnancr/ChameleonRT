@@ -5,8 +5,16 @@
 #include <iostream>
 #include <numeric>
 #include <string>
+#ifndef USE_SLANG_COMPILER
 #include "spv_shaders_embedded_spv.h"
+#endif
+#ifdef USE_SLANG_COMPILER
+#include "../../util/slang_shader_compiler.h"
+#include <fstream>
+#include <filesystem>
+#endif
 #include "util.h"
+#include "mesh.h"  // For MeshDesc structure
 #include <glm/ext.hpp>
 
 RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
@@ -53,6 +61,13 @@ RenderVulkan::RenderVulkan(std::shared_ptr<vkrt::Device> dev)
     pool_ci.queryCount = 2;
     CHECK_VULKAN(
         vkCreateQueryPool(device->logical_device(), &pool_ci, nullptr, &timing_query_pool));
+
+#ifdef USE_SLANG_COMPILER
+    // Initialize Slang shader compiler
+    if (!slangCompiler.isValid()) {
+        throw std::runtime_error("Failed to initialize Slang shader compiler");
+    }
+#endif
 }
 
 RenderVulkan::RenderVulkan() : RenderVulkan(std::make_shared<vkrt::Device>())
@@ -68,7 +83,8 @@ RenderVulkan::~RenderVulkan()
     vkDestroyCommandPool(device->logical_device(), render_cmd_pool, nullptr);
     vkDestroyPipelineLayout(device->logical_device(), pipeline_layout, nullptr);
     vkDestroyDescriptorSetLayout(device->logical_device(), desc_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device->logical_device(), textures_desc_layout, nullptr);
+    // DESCRIPTOR FLATTENING: No longer using separate textures_desc_layout
+    // vkDestroyDescriptorSetLayout(device->logical_device(), textures_desc_layout, nullptr);
     vkDestroyDescriptorPool(device->logical_device(), desc_pool, nullptr);
     vkDestroyFence(device->logical_device(), fence, nullptr);
     vkDestroyPipeline(device->logical_device(), rt_pipeline.handle(), nullptr);
@@ -662,6 +678,136 @@ void RenderVulkan::set_scene(const Scene &scene)
                            VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
     }
 
+#ifdef USE_SLANG_COMPILER
+    // Create scene params buffer (contains num_lights for Slang shader)
+    // Slang path uses descriptor binding 7 instead of SBT for num_lights
+    scene_params = vkrt::Buffer::host(
+        *device, sizeof(uint32_t), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    {
+        void *map = scene_params->map();
+        uint32_t num_lights = static_cast<uint32_t>(scene.lights.size());
+        std::memcpy(map, &num_lights, sizeof(uint32_t));
+        scene_params->unmap();
+    }
+
+    // ============================================================================
+    // Create global geometry buffers from scene data
+    // ============================================================================
+    //
+    // NOTE: Slang SPIRV codegen uses standard SPIRV array layout rules which 
+    // require vec3/uvec3 arrays to have ArrayStride 16 (aligned to vec4).
+    // GLSL with VK_EXT_scalar_block_layout can use tightly-packed ArrayStride 12.
+    // Therefore, we pad vec3/uvec3 data to vec4/uvec4 when using Slang compiler.
+    // ============================================================================
+   
+    // --- Slang: Pad vec3/uvec3 arrays to vec4/uvec4 (ArrayStride 16) ---
+    
+    // 1. Global Vertex Buffer (vec3 positions -> padded to vec4)
+    if (!scene.global_vertices.empty()) {
+        global_vertex_count = scene.global_vertices.size();
+        std::vector<glm::vec4> padded_vertices(global_vertex_count);
+        for (size_t i = 0; i < global_vertex_count; ++i) {
+            padded_vertices[i] = glm::vec4(scene.global_vertices[i], 0.0f);
+        }
+        upload_global_buffer(
+            global_vertex_buffer,
+            padded_vertices.data(),
+            padded_vertices.size() * sizeof(glm::vec4),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+    
+    // 2. Global Index Buffer (uvec3 triangles -> padded to uvec4)
+    if (!scene.global_indices.empty()) {
+        global_index_count = scene.global_indices.size();
+        std::vector<glm::uvec4> padded_indices(global_index_count);
+        for (size_t i = 0; i < global_index_count; ++i) {
+            padded_indices[i] = glm::uvec4(scene.global_indices[i], 0u);
+        }
+        upload_global_buffer(
+            global_index_buffer,
+            padded_indices.data(),
+            padded_indices.size() * sizeof(glm::uvec4),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+    
+    // 3. Global Normal Buffer (vec3 normals -> padded to vec4)
+    if (!scene.global_normals.empty()) {
+        global_normal_count = scene.global_normals.size();
+        std::vector<glm::vec4> padded_normals(global_normal_count);
+        for (size_t i = 0; i < global_normal_count; ++i) {
+            padded_normals[i] = glm::vec4(scene.global_normals[i], 0.0f);
+        }
+        upload_global_buffer(
+            global_normal_buffer,
+            padded_normals.data(),
+            padded_normals.size() * sizeof(glm::vec4),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+#else
+    // --- GLSL: Use native vec3/uvec3 with scalar block layout (ArrayStride 12) ---
+    
+    // 1. Global Vertex Buffer (vec3 positions, tightly packed)
+    if (!scene.global_vertices.empty()) {
+        global_vertex_count = scene.global_vertices.size();
+        upload_global_buffer(
+            global_vertex_buffer,
+            scene.global_vertices.data(),
+            scene.global_vertices.size() * sizeof(glm::vec3),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+    
+    // 2. Global Index Buffer (uvec3 triangles, tightly packed)
+    if (!scene.global_indices.empty()) {
+        global_index_count = scene.global_indices.size();
+        upload_global_buffer(
+            global_index_buffer,
+            scene.global_indices.data(),
+            scene.global_indices.size() * sizeof(glm::uvec3),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+    
+    // 3. Global Normal Buffer (vec3 normals, tightly packed)
+    if (!scene.global_normals.empty()) {
+        global_normal_count = scene.global_normals.size();
+        upload_global_buffer(
+            global_normal_buffer,
+            scene.global_normals.data(),
+            scene.global_normals.size() * sizeof(glm::vec3),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+    
+#endif
+    
+    // 4. Global UV Buffer
+    if (!scene.global_uvs.empty()) {
+        global_uv_count = scene.global_uvs.size();
+        
+        upload_global_buffer(
+            global_uv_buffer,
+            scene.global_uvs.data(),
+            scene.global_uvs.size() * sizeof(glm::vec2),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+    
+    // 5. MeshDesc Buffer
+    if (!scene.mesh_descriptors.empty()) {
+        mesh_desc_count = scene.mesh_descriptors.size();
+        
+        upload_global_buffer(
+            mesh_desc_buffer,
+            scene.mesh_descriptors.data(),
+            scene.mesh_descriptors.size() * sizeof(MeshDesc),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        );
+    }
+
     build_raytracing_pipeline();
     build_shader_descriptor_table();
     build_shader_binding_table();
@@ -763,13 +909,36 @@ void RenderVulkan::build_raytracing_pipeline()
             .add_binding(
                 3, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
-                4, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+                4, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
             .add_binding(
-                5, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+                5, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
 #ifdef REPORT_RAY_STATS
             .add_binding(
                 6, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
 #endif
+#ifdef USE_SLANG_COMPILER
+            // Scene params (num_lights) at binding 7 - only for Slang path
+            .add_binding(
+                7, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+#endif
+            // Global buffer bindings (10-14)
+            .add_binding(
+                10, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            .add_binding(
+                11, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            .add_binding(
+                12, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            .add_binding(
+                13, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            .add_binding(
+                14, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            // Textures at binding 30 (single descriptor set architecture)
+            .add_binding(
+                30,
+                std::max(textures.size(), size_t(1)),
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+                VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)
             .build(*device);
 
     const size_t total_geom =
@@ -780,17 +949,9 @@ void RenderVulkan::build_raytracing_pipeline()
                             return n + t->geometries.size();
                         });
 
-    textures_desc_layout =
-        vkrt::DescriptorSetLayoutBuilder()
-            .add_binding(0,
-                         std::max(textures.size(), size_t(1)),
-                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                         VK_SHADER_STAGE_RAYGEN_BIT_KHR,
-                         VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)
-            .build(*device);
-
-    std::vector<VkDescriptorSetLayout> descriptor_layouts = {desc_layout,
-                                                             textures_desc_layout};
+    // DESCRIPTOR FLATTENING: Remove separate textures_desc_layout (Set 1)
+    // Textures are now in Set 0 at binding 30
+    std::vector<VkDescriptorSetLayout> descriptor_layouts = {desc_layout};
 
     VkPipelineLayoutCreateInfo pipeline_create_info = {};
     pipeline_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -800,7 +961,62 @@ void RenderVulkan::build_raytracing_pipeline()
     CHECK_VULKAN(vkCreatePipelineLayout(
         device->logical_device(), &pipeline_create_info, nullptr, &pipeline_layout));
 
-    // Load the shader modules for our pipeline and build the pipeline
+#ifdef USE_SLANG_COMPILER
+    // Load and compile Slang RT shaders
+    chameleonrt::SlangShaderCompiler slangCompiler;
+    if (!slangCompiler.isValid()) {
+        throw std::runtime_error("Failed to initialize Slang shader compiler");
+    }
+    
+    // Load unified Slang shader source with Vulkan bindings
+    auto shaderSource = chameleonrt::SlangShaderCompiler::loadShaderSource("shaders/unified_render.slang");
+    if (!shaderSource) {
+        throw std::runtime_error("Failed to load unified_render.slang");
+    }
+    
+    // Compile to SPIRV library with VULKAN define for binding selection
+    // Add shaders/ directory to search paths so modules can be found
+    std::vector<std::string> defines = {"VULKAN"};
+#ifdef REPORT_RAY_STATS
+    defines.push_back("REPORT_RAY_STATS");
+#endif
+    auto result = slangCompiler.compileSlangToSPIRVLibrary(*shaderSource, {"shaders"}, defines);
+    if (!result) {
+        throw std::runtime_error("Failed to compile Slang shader to SPIRV: " + slangCompiler.getLastError());
+    }
+    
+    // Create shader modules from compiled SPIRV
+    std::shared_ptr<vkrt::ShaderModule> raygen_shader, miss_shader, occlusion_miss_shader, closest_hit_shader;
+    
+    for (const auto& blob : *result) {
+        // Validate SPIRV size alignment
+        if (blob.bytecode.size() % 4 != 0) {
+            std::cerr << "ERROR: SPIRV size " << blob.bytecode.size() 
+                      << " is not aligned to 4-byte boundary for " << blob.entryPoint << std::endl;
+            throw std::runtime_error("Invalid SPIRV alignment from Slang compiler");
+        }
+        
+        // SPIRV must be 4-byte aligned - convert byte array to uint32_t array
+        const uint32_t* spirv_code = reinterpret_cast<const uint32_t*>(blob.bytecode.data());
+        size_t spirv_size_bytes = blob.bytecode.size();
+        
+        if (blob.entryPoint == "RayGen") {
+            raygen_shader = std::make_shared<vkrt::ShaderModule>(*device, spirv_code, spirv_size_bytes);
+        } else if (blob.entryPoint == "Miss") {
+            miss_shader = std::make_shared<vkrt::ShaderModule>(*device, spirv_code, spirv_size_bytes);
+        } else if (blob.entryPoint == "ShadowMiss") {
+            occlusion_miss_shader = std::make_shared<vkrt::ShaderModule>(*device, spirv_code, spirv_size_bytes);
+        } else if (blob.entryPoint == "ClosestHit") {
+            closest_hit_shader = std::make_shared<vkrt::ShaderModule>(*device, spirv_code, spirv_size_bytes);
+        }
+    }
+    
+    // Verify all shaders were compiled
+    if (!raygen_shader || !miss_shader || !occlusion_miss_shader || !closest_hit_shader) {
+        throw std::runtime_error("Failed to compile all required Slang RT entry points");
+    }
+#else
+    // Original embedded SPIRV path
     auto raygen_shader =
         std::make_shared<vkrt::ShaderModule>(*device, raygen_spv, sizeof(raygen_spv));
 
@@ -811,6 +1027,7 @@ void RenderVulkan::build_raytracing_pipeline()
 
     auto closest_hit_shader =
         std::make_shared<vkrt::ShaderModule>(*device, hit_spv, sizeof(hit_spv));
+#endif
 
     rt_pipeline = vkrt::RTPipelineBuilder()
                       .set_raygen("raygen", raygen_shader)
@@ -824,30 +1041,28 @@ void RenderVulkan::build_raytracing_pipeline()
 
 void RenderVulkan::build_shader_descriptor_table()
 {
+    // DESCRIPTOR FLATTENING: Combined pool for all Set 0 resources (including textures at binding 30)
     const std::vector<VkDescriptorPoolSize> pool_sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+#ifdef USE_SLANG_COMPILER
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},  // ViewParams + SceneParams (Slang only)
+#else
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},  // ViewParams only (GLSL uses SBT)
+#endif
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},  // 2 existing + 5 global buffers
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             std::max(uint32_t(textures.size()), uint32_t(1))}};
+                             std::max(uint32_t(textures.size()), uint32_t(1))}}; // Moved from Set 1
 
     VkDescriptorPoolCreateInfo pool_create_info = {};
     pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_create_info.maxSets = 6;
+    pool_create_info.maxSets = 1;  // Only Set 0 now (was 6)
     pool_create_info.poolSizeCount = pool_sizes.size();
     pool_create_info.pPoolSizes = pool_sizes.data();
     CHECK_VULKAN(vkCreateDescriptorPool(
         device->logical_device(), &pool_create_info, nullptr, &desc_pool));
 
-    VkDescriptorSetAllocateInfo alloc_info = {};
-    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool = desc_pool;
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts = &desc_layout;
-    CHECK_VULKAN(vkAllocateDescriptorSets(device->logical_device(), &alloc_info, &desc_set));
-
-    // Set up the size info for the variable size texture info binding
+    // Allocate Set 0 with variable descriptor count for textures at binding 30
     const uint32_t texture_set_size = textures.size();
     VkDescriptorSetVariableDescriptorCountAllocateInfo texture_set_size_info = {};
     texture_set_size_info.sType =
@@ -855,16 +1070,20 @@ void RenderVulkan::build_shader_descriptor_table()
     texture_set_size_info.descriptorSetCount = 1;
     texture_set_size_info.pDescriptorCounts = &texture_set_size;
 
-    alloc_info.pSetLayouts = &textures_desc_layout;
-    alloc_info.pNext = &texture_set_size_info;
-    CHECK_VULKAN(
-        vkAllocateDescriptorSets(device->logical_device(), &alloc_info, &textures_desc_set));
+    VkDescriptorSetAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.descriptorPool = desc_pool;
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.pSetLayouts = &desc_layout;
+    alloc_info.pNext = &texture_set_size_info;  // Variable count for binding 30
+    CHECK_VULKAN(vkAllocateDescriptorSets(device->logical_device(), &alloc_info, &desc_set));
 
     std::vector<vkrt::CombinedImageSampler> combined_samplers;
     for (const auto &t : textures) {
         combined_samplers.emplace_back(t, sampler);
     }
 
+    // Write descriptors to Set 0 (including textures at binding 30)
     auto updater = vkrt::DescriptorSetUpdater()
                        .write_acceleration_structure(desc_set, 0, scene_bvh)
                        .write_storage_image(desc_set, 1, render_target)
@@ -875,11 +1094,114 @@ void RenderVulkan::build_shader_descriptor_table()
 #ifdef REPORT_RAY_STATS
     updater.write_storage_image(desc_set, 6, ray_stats);
 #endif
+#ifdef USE_SLANG_COMPILER
+    updater.write_ubo(desc_set, 7, scene_params);  // num_lights for Slang shader
+#endif
 
+    // DESCRIPTOR FLATTENING: Write textures to Set 0, binding 30 (was Set 1, binding 0)
     if (!combined_samplers.empty()) {
-        updater.write_combined_sampler_array(textures_desc_set, 0, combined_samplers);
+        updater.write_combined_sampler_array(desc_set, 30, combined_samplers);
     }
     updater.update(*device);
+
+    // ============================================================================
+    // Write global buffer descriptors
+    // ============================================================================
+    
+    // Global vertex buffer (binding 10)
+    if (global_vertex_buffer) {
+        VkDescriptorBufferInfo vertex_info = {};
+        vertex_info.buffer = global_vertex_buffer->handle();
+        vertex_info.offset = 0;
+        vertex_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet vertex_write = {};
+        vertex_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        vertex_write.dstSet = desc_set;
+        vertex_write.dstBinding = 10;
+        vertex_write.dstArrayElement = 0;
+        vertex_write.descriptorCount = 1;
+        vertex_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        vertex_write.pBufferInfo = &vertex_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &vertex_write, 0, nullptr);
+    }
+    
+    // Global index buffer (binding 11)
+    if (global_index_buffer) {
+        VkDescriptorBufferInfo index_info = {};
+        index_info.buffer = global_index_buffer->handle();
+        index_info.offset = 0;
+        index_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet index_write = {};
+        index_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        index_write.dstSet = desc_set;
+        index_write.dstBinding = 11;
+        index_write.dstArrayElement = 0;
+        index_write.descriptorCount = 1;
+        index_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        index_write.pBufferInfo = &index_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &index_write, 0, nullptr);
+    }
+    
+    // Global normal buffer (binding 12)
+    if (global_normal_buffer) {
+        VkDescriptorBufferInfo normal_info = {};
+        normal_info.buffer = global_normal_buffer->handle();
+        normal_info.offset = 0;
+        normal_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet normal_write = {};
+        normal_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        normal_write.dstSet = desc_set;
+        normal_write.dstBinding = 12;
+        normal_write.dstArrayElement = 0;
+        normal_write.descriptorCount = 1;
+        normal_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        normal_write.pBufferInfo = &normal_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &normal_write, 0, nullptr);
+    }
+    
+    // Global UV buffer (binding 13)
+    if (global_uv_buffer) {
+        VkDescriptorBufferInfo uv_info = {};
+        uv_info.buffer = global_uv_buffer->handle();
+        uv_info.offset = 0;
+        uv_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet uv_write = {};
+        uv_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        uv_write.dstSet = desc_set;
+        uv_write.dstBinding = 13;
+        uv_write.dstArrayElement = 0;
+        uv_write.descriptorCount = 1;
+        uv_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        uv_write.pBufferInfo = &uv_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &uv_write, 0, nullptr);
+    }
+    
+    // MeshDesc buffer (binding 14)
+    if (mesh_desc_buffer) {
+        VkDescriptorBufferInfo mesh_info = {};
+        mesh_info.buffer = mesh_desc_buffer->handle();
+        mesh_info.offset = 0;
+        mesh_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet mesh_write = {};
+        mesh_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        mesh_write.dstSet = desc_set;
+        mesh_write.dstBinding = 14;
+        mesh_write.dstArrayElement = 0;
+        mesh_write.descriptorCount = 1;
+        mesh_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        mesh_write.pBufferInfo = &mesh_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &mesh_write, 0, nullptr);
+    }
 }
 
 void RenderVulkan::build_shader_binding_table()
@@ -909,34 +1231,22 @@ void RenderVulkan::build_shader_binding_table()
         *params = light_params->size() / sizeof(QuadLight);
     }
 
+    // Write simplified SBT with only meshDescIndex
+    
+    size_t mesh_desc_index = 0;
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id]->geometries.size(); ++j) {
-            auto &geom = meshes[pm.mesh_id]->geometries[j];
             const std::string hg_name =
                 "HitGroup_param_mesh" + std::to_string(i) + "_geom" + std::to_string(j);
 
             HitGroupParams *params =
                 reinterpret_cast<HitGroupParams *>(shader_table.sbt_params(hg_name));
 
-            params->vert_buf = meshes[pm.mesh_id]->geometries[j].vertex_buf->device_address();
-            params->idx_buf = meshes[pm.mesh_id]->geometries[j].index_buf->device_address();
-
-            if (meshes[pm.mesh_id]->geometries[j].normal_buf) {
-                params->normal_buf =
-                    meshes[pm.mesh_id]->geometries[j].normal_buf->device_address();
-                params->num_normals = 1;
-            } else {
-                params->num_normals = 0;
-            }
-
-            if (meshes[pm.mesh_id]->geometries[j].uv_buf) {
-                params->uv_buf = meshes[pm.mesh_id]->geometries[j].uv_buf->device_address();
-                params->num_uvs = 1;
-            } else {
-                params->num_uvs = 0;
-            }
-            params->material_id = pm.material_ids[j];
+            // Write only meshDescIndex - all geometry data accessed via global buffers
+            params->meshDescIndex = static_cast<uint32_t>(mesh_desc_index);
+            
+            mesh_desc_index++;
         }
     }
 
@@ -1014,7 +1324,8 @@ void RenderVulkan::record_command_buffers()
     vkCmdBindPipeline(
         render_cmd_buf, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline.handle());
 
-    const std::vector<VkDescriptorSet> descriptor_sets = {desc_set, textures_desc_set};
+    // DESCRIPTOR FLATTENING: Only bind Set 0 (textures moved from Set 1 to binding 30)
+    const std::vector<VkDescriptorSet> descriptor_sets = {desc_set};
 
     vkCmdBindDescriptorSets(render_cmd_buf,
                             VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
@@ -1103,4 +1414,75 @@ void RenderVulkan::record_command_buffers()
 #endif
 
     CHECK_VULKAN(vkEndCommandBuffer(readback_cmd_buf));
+}
+
+// Upload global buffer data to GPU via staging buffer
+void RenderVulkan::upload_global_buffer(std::shared_ptr<vkrt::Buffer>& gpu_buf,
+                                       const void* data,
+                                       size_t size,
+                                       VkBufferUsageFlags usage)
+{
+    // Create staging buffer
+    auto staging = vkrt::Buffer::host(
+        *device,
+        size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    // Copy data to staging
+    std::memcpy(staging->map(), data, size);
+    staging->unmap();
+    
+    // Create device buffer
+    gpu_buf = vkrt::Buffer::device(
+        *device,
+        size,
+        usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+    );
+    
+    // Copy staging to device via command buffer
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
+    
+    VkBufferCopy copy_region = {};
+    copy_region.size = size;
+    vkCmdCopyBuffer(command_buffer,
+                   staging->handle(),
+                   gpu_buf->handle(),
+                   1,
+                   &copy_region);
+    
+    // Barrier to make buffer shader-readable
+    VkBufferMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = gpu_buf->handle();
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                        0,
+                        0, nullptr,
+                        1, &barrier,
+                        0, nullptr);
+    
+    CHECK_VULKAN(vkEndCommandBuffer(command_buffer));
+    
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+    CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+    
+    vkResetCommandPool(device->logical_device(),
+                      command_pool,
+                      VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
 }

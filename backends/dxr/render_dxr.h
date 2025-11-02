@@ -7,6 +7,10 @@
 #include "dxr_utils.h"
 #include "render_backend.h"
 
+#ifdef USE_SLANG_COMPILER
+#include "slang_shader_compiler.h"
+#endif
+
 struct RenderDXR : RenderBackend {
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
     Microsoft::WRL::ComPtr<ID3D12Device5> device;
@@ -19,6 +23,22 @@ struct RenderDXR : RenderBackend {
 
     dxr::Buffer view_param_buf, img_readback_buf, instance_buf, material_param_buf, light_buf,
         ray_stats_readback_buf;
+
+    // Global buffers (for shader access)
+    dxr::Buffer global_vertex_buffer;
+    dxr::Buffer global_index_buffer;
+    dxr::Buffer global_normal_buffer;
+    dxr::Buffer global_uv_buffer;
+    dxr::Buffer mesh_desc_buffer;
+    dxr::Buffer instance_to_mesh_desc_buffer;  // Maps InstanceID to MeshDesc index
+    
+    // Track buffer sizes for SRV creation
+    size_t global_vertex_count = 0;
+    size_t global_index_count = 0;
+    size_t global_normal_count = 0;
+    size_t global_uv_count = 0;
+    size_t mesh_desc_count = 0;
+    size_t instance_count = 0;
 
     dxr::Texture2D render_target, accum_buffer, ray_stats;
     std::vector<dxr::Texture2D> textures;
@@ -44,6 +64,11 @@ struct RenderDXR : RenderBackend {
 
 #ifdef REPORT_RAY_STATS
     std::vector<uint16_t> ray_counts;
+#endif
+
+#ifdef USE_SLANG_COMPILER
+    // Slang shader compiler for runtime compilation
+    chameleonrt::SlangShaderCompiler slangCompiler;
 #endif
 
     RenderDXR(Microsoft::WRL::ComPtr<ID3D12Device5> device);
