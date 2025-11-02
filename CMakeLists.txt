@@ -23,6 +23,55 @@ include(cmake/package.cmake)
 
 include(CMakeDependentOption)
 
+# ============================================================================
+# Slang Shader Compiler Support
+# ============================================================================
+
+option(ENABLE_SLANG "Use Slang for shader compilation" OFF)
+
+if(ENABLE_SLANG)
+    # Allow user to specify Slang_ROOT from environment variable
+    if(DEFINED ENV{SLANG_PATH})
+        set(Slang_ROOT $ENV{SLANG_PATH})
+    endif()
+    
+    # Find the Slang package (uses cmake/FindSlang.cmake)
+    find_package(Slang REQUIRED)
+    
+    # Create Slang compiler utility library
+    add_library(slang_compiler_util STATIC
+        util/slang_shader_compiler.h
+        util/slang_shader_compiler.cpp
+    )
+    
+    # Link to Slang library
+    target_link_libraries(slang_compiler_util
+        PUBLIC Slang::Slang
+    )
+    
+    # Set include directories
+    target_include_directories(slang_compiler_util
+        PUBLIC 
+            ${CMAKE_CURRENT_SOURCE_DIR}/util
+            ${Slang_INCLUDE_DIRS}
+    )
+    
+    # Define macro to indicate Slang is available
+    target_compile_definitions(slang_compiler_util
+        PUBLIC CHAMELEONRT_USE_SLANG=1
+    )
+    
+    # Set C++ standard for the utility library (requires C++17 for std::optional)
+    set_target_properties(slang_compiler_util PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+    )
+    
+    message(STATUS "Slang shader compiler support enabled")
+    message(STATUS "Slang include directory: ${Slang_INCLUDE_DIRS}")
+    message(STATUS "Slang library: ${Slang_LIBRARIES}")
+endif()
+
 add_subdirectory(imgui)
 add_subdirectory(util)
 add_subdirectory(backends)
@@ -38,6 +87,87 @@ set_target_properties(chameleonrt PROPERTIES
 target_link_libraries(chameleonrt PUBLIC
     util
     display)
+
+# ============================================================================
+# Slang DLL Deployment (Windows)
+# ============================================================================
+
+if(WIN32 AND ENABLE_SLANG)
+    # Copy slang.dll to the executable directory so it can be found at runtime
+    add_custom_command(TARGET chameleonrt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${Slang_ROOT}/bin/slang.dll"
+            "$<TARGET_FILE_DIR:chameleonrt>"
+        COMMENT "Deploying slang.dll to executable directory"
+    )
+endif()
+
+# ============================================================================
+# Slang Shader Deployment
+# ============================================================================
+
+if(ENABLE_SLANG)
+    # List of Slang shader files to deploy
+    set(SLANG_SHADER_FILES)
+    
+    # Add unified shader if any Slang backend is enabled
+    if(ENABLE_DXR_SLANG OR ENABLE_VULKAN_SLANG)
+        list(APPEND SLANG_SHADER_FILES unified_render.slang)
+    endif()
+    
+    # module files
+    set(SLANG_MODULE_FILES
+        modules/util.slang
+        modules/lcg_rng.slang
+        modules/disney_bsdf.slang
+        modules/lights.slang
+    )
+    
+    # Create shaders directory in output
+    add_custom_command(TARGET chameleonrt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:chameleonrt>/shaders"
+        COMMENT "Creating shaders directory in output"
+    )
+    
+    # Create modules subdirectory
+    add_custom_command(TARGET chameleonrt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:chameleonrt>/shaders/modules"
+        COMMENT "Creating shaders/modules directory in output"
+    )
+    
+    # Copy each Slang shader file to the output directory
+    foreach(SHADER_FILE ${SLANG_SHADER_FILES})
+        # Check if source shader file exists
+        if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/${SHADER_FILE}")
+            add_custom_command(TARGET chameleonrt POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_SOURCE_DIR}/shaders/${SHADER_FILE}"
+                    "$<TARGET_FILE_DIR:chameleonrt>/shaders/"
+                COMMENT "Copying ${SHADER_FILE} to output directory"
+            )
+        else()
+            message(WARNING "Slang shader file not found: ${CMAKE_SOURCE_DIR}/shaders/${SHADER_FILE}")
+        endif()
+    endforeach()
+    
+    # Copy module files
+    foreach(MODULE_FILE ${SLANG_MODULE_FILES})
+        if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/${MODULE_FILE}")
+            add_custom_command(TARGET chameleonrt POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_SOURCE_DIR}/shaders/${MODULE_FILE}"
+                    "$<TARGET_FILE_DIR:chameleonrt>/shaders/${MODULE_FILE}"
+                COMMENT "Copying ${MODULE_FILE} to output directory"
+            )
+        else()
+            message(WARNING "Slang module file not found: ${CMAKE_SOURCE_DIR}/shaders/${MODULE_FILE}")
+        endif()
+    endforeach()
+    
+    message(STATUS "Slang shader deployment configured for ${CMAKE_BUILD_TYPE} builds")
+endif()
 
 install(TARGETS chameleonrt
         RUNTIME DESTINATION bin)

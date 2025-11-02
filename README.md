@@ -1,19 +1,20 @@
-# ChameleonRT
+# ChameleonRT - Slang Integration Fork
 
-[![CMake](https://github.com/Twinklebear/ChameleonRT/actions/workflows/cmake.yml/badge.svg)](https://github.com/Twinklebear/ChameleonRT/actions/workflows/cmake.yml)
+This repository is a fork of Will Usher's [ChameleonRT](https://github.com/Twinklebear/ChameleonRT), enhanced with [Slang](https://shader-slang.com/) shader language integration. The primary goal of this fork is to enable unified shader development across multiple ray tracing backends using Slang, eliminating the need to write and maintain separate shader code for each platform.
 
-An example path tracer that runs on multiple ray tracing backends (Embree/Embree+SYCL/DXR/OptiX/Vulkan/Metal/OSPRay).
-Uses [tinyobjloader](https://github.com/syoyo/tinyobjloader) to load OBJ files,
-[tinygltf](https://github.com/syoyo/tinygltf) to load glTF files and, optionally,
-Ingo Wald's [pbrt-parser](https://github.com/ingowald/pbrt-parser) to load PBRTv3 files.
-The San Miguel,
-Sponza and Rungholt models shown below are from Morgan McGuire's [Computer Graphics Data Archive](https://casual-effects.com/data/).
+**Key additions in this fork:**
+- Slang-based shader compilation for **DXR and Vulkan backends** (tested on Windows)
+- Unified shader codebase in `shaders/unified_render.slang`
+- Enhanced performance analysis and benchmarking tools
 
-Binaries built for each platform with support for all rendering backends available on that platform
-can be downloaded from the [Releases](https://github.com/Twinklebear/ChameleonRT/releases) or the latest [Actions](https://github.com/Twinklebear/ChameleonRT/actions) artifacts.
-On Linux set the `LD_LIBRARY_PATH` to include the directory where you extract the
-application, on macOS do the same for `DYLD_LIBRARY_PATH`. On macOS you may need to do some
-tweaking/security allowances to get the application to run. Only x86_64 binaries are provided for macOS at the moment.
+**Current Status:** Slang integration is currently implemented and tested for **DirectX Ray Tracing (DXR)** and **Vulkan** backends on **Windows only**. Support for additional backends and platforms may be added in the future.
+
+**Original ChameleonRT:** An example path tracer supporting multiple ray tracing backends (Embree, Embree+SYCL, DXR, OptiX, Vulkan, Metal, OSPRay). This fork maintains compatibility with the original backends while adding Slang integration options for DXR and Vulkan.
+
+The project uses [tinyobjloader](https://github.com/syoyo/tinyobjloader) for OBJ files,
+[tinygltf](https://github.com/syoyo/tinygltf) for glTF files, and optionally
+[pbrt-parser](https://github.com/ingowald/pbrt-parser) for PBRTv3 files.
+Example models (San Miguel, Sponza, Rungholt) are from Morgan McGuire's [Computer Graphics Data Archive](https://casual-effects.com/data/).
 
 [![San Miguel, Sponza and Rungholt](https://i.imgur.com/tKZYjzn.jpg)](https://i.imgur.com/pVhQK3j.jpg)
 
@@ -41,6 +42,94 @@ Keys while the application window is in focus:
                        should be used. Defaults to the first camera
 -img <x> <y>           Specify the window dimensions. Defaults to 1280x720
 ```
+
+## Building with Slang Support
+
+This fork adds Slang shader language support for unified shader development across the **DXR and Vulkan backends on Windows**.
+
+### Prerequisites
+
+- **Windows 10/11** (required for current Slang backend support)
+- [Slang](https://github.com/shader-slang/slang) compiler (tested with version **v2025.12.1**)
+- [SDL2](https://www.libsdl.org/) for window management
+- [GLM](https://github.com/g-truc/glm) (automatically downloaded by CMake)
+- **For DXR**: Windows 10 1809 or higher, latest Windows 10 SDK, DXR-capable GPU
+- **For Vulkan**: Vulkan SDK 1.2.162 or higher, Vulkan ray tracing capable GPU
+
+### Building Slang v2025.12.1
+
+This fork has been built and tested against **Slang version v2025.12.1**. Build Slang first:
+
+```bash
+git clone https://github.com/shader-slang/slang.git
+cd slang
+git checkout v2025.12.1
+# Follow Slang's build instructions for Windows
+# Typical build: cmake -B build -S . && cmake --build build --config Release
+```
+
+### CMake Build with Slang
+
+To build ChameleonRT with Slang support for DXR and/or Vulkan:
+
+```bash
+# Build with DXR + Slang backend
+cmake -B build -S . \
+    -DENABLE_SLANG=ON \
+    -DSlang_ROOT=C:/path/to/slang/build/Release \
+    -DENABLE_DXR_SLANG=ON \
+    -DSDL2_DIR=C:/path/to/SDL2/cmake
+
+cmake --build build --config Release
+```
+
+```bash
+# Build with Vulkan + Slang backend
+cmake -B build -S . \
+    -DENABLE_SLANG=ON \
+    -DSlang_ROOT=C:/path/to/slang/build/Release \
+    -DENABLE_VULKAN_SLANG=ON \
+    -DSDL2_DIR=C:/path/to/SDL2/cmake \
+    -DVULKAN_SDK=C:/path/to/VulkanSDK/version
+
+cmake --build build --config Release
+```
+
+```bash
+# Build with both DXR and Vulkan Slang backends
+cmake -B build -S . \
+    -DENABLE_SLANG=ON \
+    -DSlang_ROOT=C:/path/to/slang/build/Release \
+    -DENABLE_DXR_SLANG=ON \
+    -DENABLE_VULKAN_SLANG=ON \
+    -DSDL2_DIR=C:/path/to/SDL2/cmake \
+    -DVULKAN_SDK=C:/path/to/VulkanSDK/version
+
+cmake --build build --config Release
+```
+
+### Slang CMake Options
+
+- `ENABLE_SLANG=ON` - Enable Slang shader compilation support (required for Slang backends)
+- `Slang_ROOT=<path>` - Path to Slang build directory (e.g., `C:/dev/slang/build/Release`)
+- `ENABLE_DXR_SLANG=ON` - Build DXR backend with Slang shaders (Windows only)
+- `ENABLE_VULKAN_SLANG=ON` - Build Vulkan backend with Slang shaders (Windows only)
+
+**Note:** The `Slang_ROOT` should point to the Slang build directory containing the compiled binaries and headers. The Slang DLL will be automatically copied to the executable directory during the build process.
+
+### Running with Slang Backends
+
+After building, run ChameleonRT with the Slang-enabled backends:
+
+```bash
+# Using DXR with Slang shaders
+./chameleonrt.exe dxr path/to/scene.obj
+
+# Using Vulkan with Slang shaders
+./chameleonrt.exe vulkan path/to/scene.obj
+```
+
+The Slang-based backends use the same command-line interface as the original backends, with shader compilation handled transparently by Slang at runtime or build time.
 
 ## Ray Tracing Backends  
 
@@ -198,9 +287,25 @@ specify that path.
 
 You can then pass `ospray` to use the OSPRay backend.
 
-## Citation
+## Citations
 
-If you find ChameleonRT useful in your work, please cite it as:
+### This Fork
+
+If you use this Slang-integrated fork in your work, please cite both this fork and the original ChameleonRT:
+
+```bibtex
+@misc{chameleonrt-slang-fork,
+	author = {Krishnan, C. R.},
+	year = {2025},
+	howpublished = {\url{https://github.com/krishnancr/ChameleonRT}},
+	title = {{ChameleonRT - Slang Integration Fork}},
+	note = {Fork of ChameleonRT with Slang shader language support for DXR and Vulkan}
+}
+```
+
+### Original ChameleonRT
+
+Please also cite the original ChameleonRT project:
 
 ```bibtex
 @misc{chameleonrt,
@@ -208,5 +313,9 @@ If you find ChameleonRT useful in your work, please cite it as:
 	year = {2019},
 	howpublished = {\url{https://github.com/Twinklebear/ChameleonRT}},
 	title = {{ChameleonRT}}
-} 
+}
 ```
+
+## Acknowledgments
+
+This fork builds upon the excellent foundation provided by [Will Usher's ChameleonRT](https://github.com/Twinklebear/ChameleonRT). The Slang integration demonstrates the power of unified shader languages for cross-platform ray tracing development.

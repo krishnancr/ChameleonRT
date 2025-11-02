@@ -7,7 +7,12 @@
 #include <numeric>
 #include <sstream>
 #include <string>
+#ifndef USE_SLANG_COMPILER
 #include "render_dxr_embedded_dxil.h"
+#endif
+#ifdef USE_SLANG_COMPILER
+#include "../../util/slang_shader_compiler.h"
+#endif
 #include "util.h"
 #include <glm/ext.hpp>
 
@@ -266,6 +271,7 @@ void RenderDXR::set_scene(const Scene &scene)
             buf[i].InstanceID = i;
             buf[i].InstanceContributionToHitGroupIndex =
                 parameterized_mesh_sbt_offsets[inst.parameterized_mesh_id];
+            
             buf[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE;
             buf[i].AccelerationStructure =
                 meshes[parameterized_meshes[inst.parameterized_mesh_id].mesh_id]
@@ -401,6 +407,160 @@ void RenderDXR::set_scene(const Scene &scene)
         auto b = barrier_transition(light_buf, D3D12_RESOURCE_STATE_GENERIC_READ);
         cmd_list->ResourceBarrier(1, &b);
 
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    // ============================================================================
+    // Create Global Buffers (for shader access)
+    // ============================================================================
+
+    // 1. Global Vertex Buffer (positions)
+    if (!scene.global_vertices.empty()) {
+        global_vertex_count = scene.global_vertices.size();
+        
+        dxr::Buffer upload_global_verts = dxr::Buffer::upload(
+            device.Get(),
+            scene.global_vertices.size() * sizeof(glm::vec3),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_global_verts.map(), 
+                    scene.global_vertices.data(), 
+                    upload_global_verts.size());
+        upload_global_verts.unmap();
+        
+        global_vertex_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_global_verts.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(global_vertex_buffer.get(), upload_global_verts.get());
+        auto b = barrier_transition(global_vertex_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    // 2. Global Index Buffer (uvec3 triangles)
+    if (!scene.global_indices.empty()) {
+        global_index_count = scene.global_indices.size();
+        
+        dxr::Buffer upload_global_indices = dxr::Buffer::upload(
+            device.Get(),
+            scene.global_indices.size() * sizeof(glm::uvec3),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_global_indices.map(), 
+                    scene.global_indices.data(), 
+                    upload_global_indices.size());
+        upload_global_indices.unmap();
+        
+        global_index_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_global_indices.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(global_index_buffer.get(), upload_global_indices.get());
+        auto b = barrier_transition(global_index_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    // 3. Global Normal Buffer (may be empty)
+    if (!scene.global_normals.empty()) {
+        global_normal_count = scene.global_normals.size();
+        
+        dxr::Buffer upload_global_normals = dxr::Buffer::upload(
+            device.Get(),
+            scene.global_normals.size() * sizeof(glm::vec3),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_global_normals.map(), 
+                    scene.global_normals.data(), 
+                    upload_global_normals.size());
+        upload_global_normals.unmap();
+        
+        global_normal_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_global_normals.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(global_normal_buffer.get(), upload_global_normals.get());
+        auto b = barrier_transition(global_normal_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    // 4. Global UV Buffer (may be empty)
+    if (!scene.global_uvs.empty()) {
+        global_uv_count = scene.global_uvs.size();
+        
+        dxr::Buffer upload_global_uvs = dxr::Buffer::upload(
+            device.Get(),
+            scene.global_uvs.size() * sizeof(glm::vec2),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_global_uvs.map(), 
+                    scene.global_uvs.data(), 
+                    upload_global_uvs.size());
+        upload_global_uvs.unmap();
+        
+        global_uv_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_global_uvs.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(global_uv_buffer.get(), upload_global_uvs.get());
+        auto b = barrier_transition(global_uv_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
+        CHECK_ERR(cmd_list->Close());
+        cmd_queue->ExecuteCommandLists(1, &cmd_lists);
+        sync_gpu();
+    }
+
+    // 5. MeshDesc Buffer
+    if (!scene.mesh_descriptors.empty()) {
+        mesh_desc_count = scene.mesh_descriptors.size();
+        
+        dxr::Buffer upload_mesh_descs = dxr::Buffer::upload(
+            device.Get(),
+            scene.mesh_descriptors.size() * sizeof(MeshDesc),
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        );
+        std::memcpy(upload_mesh_descs.map(), 
+                    scene.mesh_descriptors.data(), 
+                    upload_mesh_descs.size());
+        upload_mesh_descs.unmap();
+        
+        mesh_desc_buffer = dxr::Buffer::device(
+            device.Get(),
+            upload_mesh_descs.size(),
+            D3D12_RESOURCE_STATE_COPY_DEST
+        );
+
+        CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+        cmd_list->CopyResource(mesh_desc_buffer.get(), upload_mesh_descs.get());
+        auto b = barrier_transition(mesh_desc_buffer, 
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmd_list->ResourceBarrier(1, &b);
         CHECK_ERR(cmd_list->Close());
         cmd_queue->ExecuteCommandLists(1, &cmd_lists);
         sync_gpu();
@@ -590,57 +750,115 @@ void RenderDXR::create_device_objects()
 
 void RenderDXR::build_raytracing_pipeline()
 {
-    dxr::ShaderLibrary shader_library(render_dxr_dxil,
-                                      sizeof(render_dxr_dxil),
-                                      {L"RayGen", L"Miss", L"ClosestHit", L"ShadowMiss"});
+#ifdef USE_SLANG_COMPILER
+    // Load and compile Slang shader using relative path
+    auto slang_source_opt = chameleonrt::SlangShaderCompiler::loadShaderSource("shaders/unified_render.slang");
+    if (!slang_source_opt) {
+        throw std::runtime_error("Failed to load shaders/unified_render.slang");
+    }
+    std::string slang_source = *slang_source_opt;
+    
+    // Compile Slang to DXIL library
+    std::vector<std::string> defines;
+#ifdef REPORT_RAY_STATS
+    defines.push_back("REPORT_RAY_STATS");
+#endif
+    
+    auto result = slangCompiler.compileSlangToDXILLibrary(slang_source, {"shaders"}, defines);
+    
+    if (!result) {
+        std::string error = slangCompiler.getLastError();
+        std::cerr << "[Slang] Compilation failed: " << error << std::endl;
+        throw std::runtime_error("Slang shader compilation failed");
+    }
+    
+    // Create separate D3D12 shader libraries for each entry point
+    // D3D12 RT pipeline supports multiple DXIL libraries
+    std::vector<dxr::ShaderLibrary> shader_libraries;
+    
+    for (const auto& blob : *result) {
+        std::wstring export_name(blob.entryPoint.begin(), blob.entryPoint.end());
+        shader_libraries.emplace_back(
+            blob.bytecode.data(),
+            blob.bytecode.size(),
+            std::vector<std::wstring>{export_name}
+        );
+    }
+#else
+    // Original embedded DXIL path
+    std::vector<dxr::ShaderLibrary> shader_libraries;
+    shader_libraries.emplace_back(
+        render_dxr_dxil,
+        sizeof(render_dxr_dxil),
+        std::vector<std::wstring>{L"RayGen", L"Miss", L"ClosestHit", L"ShadowMiss"}
+    );
+#endif
 
+    // Move descriptor heaps to global root signature so ClosestHit can access them
     dxr::RootSignature global_root_sig =
-        dxr::RootSignatureBuilder::global().create(device.Get());
-
-    // Create the root signature for our ray gen shader
-    dxr::RootSignature raygen_root_sig =
-        dxr::RootSignatureBuilder::local()
-            .add_constants("SceneParams", 1, 1, 0)
+        dxr::RootSignatureBuilder::global()
             .add_desc_heap("cbv_srv_uav_heap", raygen_desc_heap)
             .add_desc_heap("sampler_heap", raygen_sampler_heap)
             .create(device.Get());
 
-    // Create the root signature for our closest hit function
-    dxr::RootSignature hitgroup_root_sig = dxr::RootSignatureBuilder::local()
-                                               .add_srv("vertex_buf", 0, 1)
-                                               .add_srv("index_buf", 1, 1)
-                                               .add_srv("normal_buf", 2, 1)
-                                               .add_srv("uv_buf", 3, 1)
-                                               .add_constants("MeshData", 0, 3, 1)
-                                               .create(device.Get());
+    // Create the root signature for our ray gen shader (only has local constants)
+    dxr::RootSignature raygen_root_sig =
+        dxr::RootSignatureBuilder::local()
+            .add_constants("SceneParams", 1, 1, 0)
+            .create(device.Get());
 
+    // Create the local root signature for ClosestHit
+    // Uses space0 (not space1) for Slang compatibility
+    // Uses b2 to avoid conflict with ViewParams (b0) and SceneParams (b1)
+    dxr::RootSignature hitgroup_root_sig = dxr::RootSignatureBuilder::local()
+                                                      .add_constants("HitGroupData", 2, 1, 0)  // b2, space0
+                                                      .create(device.Get());
+
+    // Build RT pipeline - add all shader libraries
     dxr::RTPipelineBuilder rt_pipeline_builder =
         dxr::RTPipelineBuilder()
-            .set_global_root_sig(global_root_sig)
-            .add_shader_library(shader_library)
+            .set_global_root_sig(global_root_sig);
+    
+    // Add all shader libraries to the pipeline
+    // D3D12 RT pipeline supports multiple DXIL libraries (see dxr_utils.cpp:495)
+    for (auto& lib : shader_libraries) {
+        rt_pipeline_builder.add_shader_library(lib);
+    }
+    
+    // Collect all export names for shader payload configuration
+    std::vector<std::wstring> all_exports;
+    for (const auto& lib : shader_libraries) {
+        for (const auto& name : lib.export_names()) {
+            all_exports.push_back(name);
+        }
+    }
+    
+    rt_pipeline_builder
             .set_ray_gen(L"RayGen")
             .add_miss_shader(L"Miss")
             .add_miss_shader(L"ShadowMiss")
             .set_shader_root_sig({L"RayGen"}, raygen_root_sig)
             .configure_shader_payload(
-                shader_library.export_names(), 8 * sizeof(float), 2 * sizeof(float))
+                all_exports, 8 * sizeof(float), 2 * sizeof(float))
             .set_max_recursion(1);
 
-    // Setup hit groups and shader root signatures for our instances.
-    // For now this is also easy since they all share the same programs and root signatures,
-    // but we just need different hitgroups to set the different params for the meshes
+    // Setup hit groups and shader root signatures for our instances
     std::vector<std::wstring> hg_names;
+    size_t hit_group_index = 0;
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id].geometries.size(); ++j) {
             const std::wstring hg_name =
                 L"HitGroup_param_mesh" + std::to_wstring(i) + L"_geom" + std::to_wstring(j);
             hg_names.push_back(hg_name);
+            
+            hit_group_index++;
 
             rt_pipeline_builder.add_hit_group(
                 {dxr::HitGroup(hg_name, D3D12_HIT_GROUP_TYPE_TRIANGLES, L"ClosestHit")});
         }
     }
+    // Assign local root signature to all hit groups
     rt_pipeline_builder.set_shader_root_sig(hg_names, hitgroup_root_sig);
 
     rt_pipeline = rt_pipeline_builder.create(device.Get());
@@ -650,6 +868,7 @@ void RenderDXR::build_shader_resource_heap()
 {
     // The CBV/SRV/UAV resource heap has the pointers/views things to our output image buffer
     // and the top level acceleration structure, and any textures
+    
     raygen_desc_heap = dxr::DescriptorHeapBuilder()
 #if REPORT_RAY_STATS
                            .add_uav_range(3, 0, 0)
@@ -658,7 +877,8 @@ void RenderDXR::build_shader_resource_heap()
 #endif
                            .add_srv_range(3, 0, 0)
                            .add_cbv_range(1, 0, 0)
-                           .add_srv_range(!textures.empty() ? textures.size() : 1, 3, 0)
+                           .add_srv_range(!textures.empty() ? textures.size() : 1, 30, 0)
+                           .add_srv_range(5, 10, 0)  // t10-t14 (global buffers)
                            .create(device.Get());
 
     raygen_sampler_heap =
@@ -674,65 +894,26 @@ void RenderDXR::build_shader_binding_table()
 
         const uint32_t num_lights = light_buf.size() / sizeof(QuadLight);
         std::memcpy(map + sig->offset("SceneParams"), &num_lights, sizeof(uint32_t));
-
-        // Is writing the descriptor heap handle actually needed? It seems to not matter
-        // if this is written or not
-        D3D12_GPU_DESCRIPTOR_HANDLE desc_heap_handle =
-            raygen_desc_heap->GetGPUDescriptorHandleForHeapStart();
-        std::memcpy(map + sig->offset("cbv_srv_uav_heap"),
-                    &desc_heap_handle,
-                    sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-        desc_heap_handle = raygen_sampler_heap->GetGPUDescriptorHandleForHeapStart();
-        std::memcpy(map + sig->offset("sampler_heap"),
-                    &desc_heap_handle,
-                    sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
     }
+    
+    // Write meshDescIndex to shader records for ClosestHit
+    size_t mesh_desc_index = 0;
     for (size_t i = 0; i < parameterized_meshes.size(); ++i) {
         const auto &pm = parameterized_meshes[i];
         for (size_t j = 0; j < meshes[pm.mesh_id].geometries.size(); ++j) {
             const std::wstring hg_name =
                 L"HitGroup_param_mesh" + std::to_wstring(i) + L"_geom" + std::to_wstring(j);
 
-            auto &geom = meshes[pm.mesh_id].geometries[j];
-
             uint8_t *map = rt_pipeline.shader_record(hg_name);
             const dxr::RootSignature *sig = rt_pipeline.shader_signature(hg_name);
 
-            D3D12_GPU_VIRTUAL_ADDRESS gpu_handle = geom.vertex_buf->GetGPUVirtualAddress();
-            std::memcpy(map + sig->offset("vertex_buf"),
-                        &gpu_handle,
-                        sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-            gpu_handle = geom.index_buf->GetGPUVirtualAddress();
-            std::memcpy(map + sig->offset("index_buf"),
-                        &gpu_handle,
-                        sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-            if (geom.normal_buf.size() != 0) {
-                gpu_handle = geom.normal_buf->GetGPUVirtualAddress();
-            } else {
-                gpu_handle = 0;
-            }
-            std::memcpy(map + sig->offset("normal_buf"),
-                        &gpu_handle,
-                        sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-            if (geom.uv_buf.size() != 0) {
-                gpu_handle = geom.uv_buf->GetGPUVirtualAddress();
-            } else {
-                gpu_handle = 0;
-            }
-            std::memcpy(
-                map + sig->offset("uv_buf"), &gpu_handle, sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
-
-            const std::array<uint32_t, 3> mesh_data = {
-                uint32_t(geom.normal_buf.size() / sizeof(glm::vec3)),
-                uint32_t(geom.uv_buf.size() / sizeof(glm::vec2)),
-                pm.material_ids[j]};
-            std::memcpy(map + sig->offset("MeshData"),
-                        mesh_data.data(),
-                        mesh_data.size() * sizeof(uint32_t));
+            const uint32_t mesh_desc_idx = static_cast<uint32_t>(mesh_desc_index);
+            
+            std::memcpy(map + sig->offset("HitGroupData"),
+                        &mesh_desc_idx,
+                        sizeof(uint32_t));
+            
+            mesh_desc_index++;
         }
     }
     rt_pipeline.unmap_shader_table();
@@ -851,16 +1032,129 @@ void RenderDXR::build_descriptor_heap()
         device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     // Write the SRVs for the textures
-    for (auto &t : textures) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC tex_desc = {0};
-        tex_desc.Format = t.pixel_format();
-        tex_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        tex_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        tex_desc.Texture2D.MipLevels = 1;
-        device->CreateShaderResourceView(t.get(), &tex_desc, heap_handle);
+    // CRITICAL: When textures.empty(), create a null descriptor for t30 to maintain
+    // correct heap offsets. The root signature reserves a slot for t30 even with no
+    // textures, so we must create a descriptor (null or real) to keep t10-t14 aligned.
+    if (textures.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC null_desc = {0};
+        null_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        null_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        null_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        null_desc.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(nullptr, &null_desc, heap_handle);
         heap_handle.ptr +=
             device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    } else {
+        for (auto &t : textures) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC tex_desc = {0};
+            tex_desc.Format = t.pixel_format();
+            tex_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            tex_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            tex_desc.Texture2D.MipLevels = 1;
+            device->CreateShaderResourceView(t.get(), &tex_desc, heap_handle);
+            heap_handle.ptr +=
+                device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        }
     }
+
+    // Create SRVs for global buffers at t10-t14
+    const UINT descriptor_increment = device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    // ===== t10: globalVertices SRV =====
+    if (global_vertex_count > 0) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC vertex_srv_desc = {};
+        vertex_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        vertex_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        vertex_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        vertex_srv_desc.Buffer.FirstElement = 0;
+        vertex_srv_desc.Buffer.NumElements = static_cast<UINT>(global_vertex_count);
+        vertex_srv_desc.Buffer.StructureByteStride = sizeof(glm::vec3);  // 12 bytes
+        vertex_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        
+        device->CreateShaderResourceView(
+            global_vertex_buffer.get(),
+            &vertex_srv_desc,
+            heap_handle
+        );
+    }
+    heap_handle.ptr += descriptor_increment;
+
+    // ===== t11: globalIndices SRV =====
+    if (global_index_count > 0) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC index_srv_desc = {};
+        index_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        index_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        index_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        index_srv_desc.Buffer.FirstElement = 0;
+        index_srv_desc.Buffer.NumElements = static_cast<UINT>(global_index_count);
+        index_srv_desc.Buffer.StructureByteStride = sizeof(glm::uvec3);  // 12 bytes
+        index_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        
+        device->CreateShaderResourceView(
+            global_index_buffer.get(),
+            &index_srv_desc,
+            heap_handle
+        );
+    }
+    heap_handle.ptr += descriptor_increment;
+
+    // ===== t12: globalNormals SRV =====
+    if (global_normal_count > 0) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC normal_srv_desc = {};
+        normal_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        normal_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        normal_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        normal_srv_desc.Buffer.FirstElement = 0;
+        normal_srv_desc.Buffer.NumElements = static_cast<UINT>(global_normal_count);
+        normal_srv_desc.Buffer.StructureByteStride = sizeof(glm::vec3);  // 12 bytes
+        normal_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        
+        device->CreateShaderResourceView(
+            global_normal_buffer.get(),
+            &normal_srv_desc,
+            heap_handle
+        );
+    }
+    heap_handle.ptr += descriptor_increment;
+
+    // ===== t13: globalUVs SRV =====
+    if (global_uv_count > 0) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC uv_srv_desc = {};
+        uv_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        uv_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        uv_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        uv_srv_desc.Buffer.FirstElement = 0;
+        uv_srv_desc.Buffer.NumElements = static_cast<UINT>(global_uv_count);
+        uv_srv_desc.Buffer.StructureByteStride = sizeof(glm::vec2);  // 8 bytes
+        uv_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        
+        device->CreateShaderResourceView(
+            global_uv_buffer.get(),
+            &uv_srv_desc,
+            heap_handle
+        );
+    }
+    heap_handle.ptr += descriptor_increment;
+
+    // ===== t14: meshDescs SRV =====
+    if (mesh_desc_count > 0) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC mesh_srv_desc = {};
+        mesh_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        mesh_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        mesh_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        mesh_srv_desc.Buffer.FirstElement = 0;
+        mesh_srv_desc.Buffer.NumElements = static_cast<UINT>(mesh_desc_count);
+        mesh_srv_desc.Buffer.StructureByteStride = sizeof(MeshDesc);  // 32 bytes
+        mesh_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        
+        device->CreateShaderResourceView(
+            mesh_desc_buffer.get(),
+            &mesh_srv_desc,
+            heap_handle
+        );
+    }
+    heap_handle.ptr += descriptor_increment;
 
     // Write the sampler to the sampler heap
     D3D12_SAMPLER_DESC sampler_desc = {0};
@@ -886,6 +1180,14 @@ void RenderDXR::record_command_lists()
     render_cmd_list->SetDescriptorHeaps(desc_heaps.size(), desc_heaps.data());
     render_cmd_list->SetPipelineState1(rt_pipeline.get());
     render_cmd_list->SetComputeRootSignature(rt_pipeline.global_sig());
+    
+    // Bind descriptor heaps to global root signature
+    // Parameter 0: cbv_srv_uav_heap
+    // Parameter 1: sampler_heap
+    render_cmd_list->SetComputeRootDescriptorTable(
+        0, raygen_desc_heap->GetGPUDescriptorHandleForHeapStart());
+    render_cmd_list->SetComputeRootDescriptorTable(
+        1, raygen_sampler_heap->GetGPUDescriptorHandleForHeapStart());
 
     render_cmd_list->EndQuery(timing_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
 

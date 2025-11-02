@@ -8,20 +8,32 @@
 #include "vulkan_utils.h"
 #include "vulkanrt_utils.h"
 
+#ifdef USE_SLANG_COMPILER
+#include "slang_shader_compiler.h"
+#endif
+
+// Simplified HitGroupParams using global buffers (meshDescIndex only)
 struct HitGroupParams {
-    uint64_t vert_buf = 0;
-    uint64_t idx_buf = 0;
-    uint64_t normal_buf = 0;
-    uint64_t uv_buf = 0;
-    uint32_t num_normals = 0;
-    uint32_t num_uvs = 0;
-    uint32_t material_id = 0;
+    uint32_t meshDescIndex = 0;  // Index into global meshDescs buffer
 };
 
 struct RenderVulkan : RenderBackend {
     std::shared_ptr<vkrt::Device> device;
 
-    std::shared_ptr<vkrt::Buffer> view_param_buf, img_readback_buf, mat_params, light_params;
+    std::shared_ptr<vkrt::Buffer> view_param_buf, img_readback_buf, mat_params, light_params, scene_params;
+
+    // Global geometry buffers for all scene data
+    std::shared_ptr<vkrt::Buffer> global_vertex_buffer;
+    std::shared_ptr<vkrt::Buffer> global_index_buffer;
+    std::shared_ptr<vkrt::Buffer> global_normal_buffer;
+    std::shared_ptr<vkrt::Buffer> global_uv_buffer;
+    std::shared_ptr<vkrt::Buffer> mesh_desc_buffer;
+    
+    size_t global_vertex_count = 0;
+    size_t global_index_count = 0;
+    size_t global_normal_count = 0;
+    size_t global_uv_count = 0;
+    size_t mesh_desc_count = 0;
 
     std::shared_ptr<vkrt::Texture2D> render_target, accum_buffer;
 
@@ -49,12 +61,14 @@ struct RenderVulkan : RenderBackend {
     vkrt::RTPipeline rt_pipeline;
     VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout desc_layout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout textures_desc_layout = VK_NULL_HANDLE;
+    // DESCRIPTOR FLATTENING: Textures moved to Set 0, binding 30 (no longer need separate Set 1)
+    // VkDescriptorSetLayout textures_desc_layout = VK_NULL_HANDLE;
 
     VkDescriptorPool desc_pool = VK_NULL_HANDLE;
     // We need a set per varying size array of things we're sending
     VkDescriptorSet desc_set = VK_NULL_HANDLE;
-    VkDescriptorSet textures_desc_set = VK_NULL_HANDLE;
+    // DESCRIPTOR FLATTENING: Textures moved to Set 0, binding 30 (no longer need separate Set 1)
+    // VkDescriptorSet textures_desc_set = VK_NULL_HANDLE;
 
     vkrt::ShaderBindingTable shader_table;
 
@@ -64,6 +78,10 @@ struct RenderVulkan : RenderBackend {
 
     size_t frame_id = 0;
     bool native_display = false;
+
+#ifdef USE_SLANG_COMPILER
+    chameleonrt::SlangShaderCompiler slangCompiler;
+#endif
 
     RenderVulkan(std::shared_ptr<vkrt::Device> device);
 
@@ -97,4 +115,10 @@ private:
                                 const float fovy);
 
     void record_command_buffers();
+
+    // Helper function for uploading global buffers to GPU
+    void upload_global_buffer(std::shared_ptr<vkrt::Buffer>& gpu_buf,
+                             const void* data,
+                             size_t size,
+                             VkBufferUsageFlags usage);
 };
