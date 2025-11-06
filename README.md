@@ -5,7 +5,6 @@ This repository is a fork of Will Usher's [ChameleonRT](https://github.com/Twink
 **Key additions in this fork:**
 - Slang-based shader compilation for **DXR and Vulkan backends** (tested on Windows)
 - Unified shader codebase in `shaders/unified_render.slang`
-- Enhanced performance analysis and benchmarking tools
 
 **Current Status:** Slang integration is currently implemented and tested for **DirectX Ray Tracing (DXR)** and **Vulkan** backends on **Windows only**. Support for additional backends and platforms may be added in the future.
 
