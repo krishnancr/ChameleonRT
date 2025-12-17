@@ -48,27 +48,20 @@ find_package(Slang REQUIRED)
 
 # Function to copy Slang DLLs to target output directory
 function(copy_slang_dlls TARGET_NAME)
-    if(WIN32 AND DEFINED Slang_LIBRARY_DLL)
-        foreach(DLL ${Slang_LIBRARY_DLL})
-            add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${DLL}"
-                    "$<TARGET_FILE_DIR:${TARGET_NAME}>"
-                COMMENT "Copying ${DLL} to output directory"
-            )
-        endforeach()
-        
-        # Also copy GFX DLL if it exists
-        if(DEFINED Slang_LIBRARY_DIR)
-            file(GLOB GFX_DLL "${Slang_LIBRARY_DIR}/gfx.dll")
-            if(GFX_DLL)
+    if(WIN32 AND DEFINED Slang_ROOT)
+        # Find all DLLs in the bin directory
+        file(GLOB SLANG_DLLS "${Slang_ROOT}/bin/*.dll")
+        if(SLANG_DLLS)
+            foreach(DLL ${SLANG_DLLS})
                 add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${GFX_DLL}"
+                        "${DLL}"
                         "$<TARGET_FILE_DIR:${TARGET_NAME}>"
-                    COMMENT "Copying gfx.dll to output directory"
+                    COMMENT "Copying ${DLL} to output directory"
                 )
-            endif()
+            endforeach()
+        else()
+            message(WARNING "No Slang DLLs found in ${Slang_ROOT}/bin")
         endif()
     endif()
 endfunction()

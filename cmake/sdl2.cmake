@@ -6,7 +6,7 @@ set(SDL2_VERSION "2.30.9")
 
 if(WIN32)
     set(SDL2_URL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-devel-${SDL2_VERSION}-VC.zip")
-    set(SDL2_HASH "SHA256=59e6d4fcb08bb644c4ce93c62bfc05a1d4db7f3a5e3ad3c18ecc3a5e15b31c50")
+    set(SDL2_HASH "SHA256=8c91d91e5bcb997d062ec2b553c53832ebf95654d4aa35e8c02a954d4ce752ae")
 elseif(APPLE)
     set(SDL2_URL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-${SDL2_VERSION}.dmg")
     set(SDL2_HASH "")  # Add hash if needed
@@ -32,12 +32,12 @@ if(NOT SDL2_FOUND)
     
     if(WIN32)
         # Set SDL2 paths for Windows VC distribution
-        set(SDL2_INCLUDE_DIR "${sdl2_SOURCE_DIR}/SDL2-${SDL2_VERSION}/include" CACHE PATH "SDL2 include directory")
+        set(SDL2_INCLUDE_DIR "${sdl2_SOURCE_DIR}/include" CACHE PATH "SDL2 include directory")
         
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-            set(SDL2_LIB_DIR "${sdl2_SOURCE_DIR}/SDL2-${SDL2_VERSION}/lib/x64")
+            set(SDL2_LIB_DIR "${sdl2_SOURCE_DIR}/lib/x64")
         else()
-            set(SDL2_LIB_DIR "${sdl2_SOURCE_DIR}/SDL2-${SDL2_VERSION}/lib/x86")
+            set(SDL2_LIB_DIR "${sdl2_SOURCE_DIR}/lib/x86")
         endif()
         
         # Create imported target
