@@ -16,7 +16,10 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_LIST_DIR}/cmake")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 
 find_package(Threads REQUIRED)
-find_package(SDL2 CONFIG REQUIRED)
+
+# Auto-download SDL2 if not found
+include(cmake/sdl2.cmake)
+
 # Include glm as an external project
 include(cmake/glm.cmake)
 include(cmake/package.cmake)
@@ -30,13 +33,8 @@ include(CMakeDependentOption)
 option(ENABLE_SLANG "Use Slang for shader compilation" OFF)
 
 if(ENABLE_SLANG)
-    # Allow user to specify Slang_ROOT from environment variable
-    if(DEFINED ENV{SLANG_PATH})
-        set(Slang_ROOT $ENV{SLANG_PATH})
-    endif()
-    
-    # Find the Slang package (uses cmake/FindSlang.cmake)
-    find_package(Slang REQUIRED)
+    # Auto-download Slang if not found
+    include(cmake/slang.cmake)
     
     # Create Slang compiler utility library
     add_library(slang_compiler_util STATIC
@@ -88,18 +86,16 @@ target_link_libraries(chameleonrt PUBLIC
     util
     display)
 
+# Copy SDL2 DLL to output directory (Windows)
+copy_sdl2_dll(chameleonrt)
+
 # ============================================================================
 # Slang DLL Deployment (Windows)
 # ============================================================================
 
-if(WIN32 AND ENABLE_SLANG)
-    # Copy slang.dll to the executable directory so it can be found at runtime
-    add_custom_command(TARGET chameleonrt POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${Slang_ROOT}/bin/slang.dll"
-            "$<TARGET_FILE_DIR:chameleonrt>"
-        COMMENT "Deploying slang.dll to executable directory"
-    )
+if(ENABLE_SLANG)
+    # Copy Slang DLLs to output directory
+    copy_slang_dlls(chameleonrt)
 endif()
 
 # ============================================================================
