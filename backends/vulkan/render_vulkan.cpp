@@ -106,8 +106,9 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                                 VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 
+    // Allocate 3x size for AccumPixel struct: color + albedo + normal
     accum_buffer = vkrt::Buffer::device(*device,
-                                        sizeof(glm::vec4) * fb_width * fb_height,
+                                        3 * sizeof(glm::vec4) * fb_width * fb_height,
                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     img_readback_buf = vkrt::Buffer::host(

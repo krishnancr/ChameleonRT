@@ -81,8 +81,9 @@ void RenderDXR::initialize(const int fb_width, const int fb_height)
                                            DXGI_FORMAT_R8G8B8A8_UNORM,
                                            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
+    // Allocate 3x size for AccumPixel struct: color + albedo + normal
     accum_buffer = dxr::Buffer::device(device.Get(),
-                                       sizeof(glm::vec4) * fb_width * fb_height,
+                                       3 * sizeof(glm::vec4) * fb_width * fb_height,
                                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
@@ -968,14 +969,14 @@ void RenderDXR::build_descriptor_heap()
     heap_handle.ptr +=
         device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // Accum buffer (structured buffer UAV)
+    // Accum buffer (structured buffer UAV) - AccumPixel struct: color + albedo + normal
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC buffer_uav_desc{};
         buffer_uav_desc.Format = DXGI_FORMAT_UNKNOWN;
         buffer_uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
         buffer_uav_desc.Buffer.FirstElement = 0;
-        buffer_uav_desc.Buffer.StructureByteStride = sizeof(glm::vec4);
-        buffer_uav_desc.Buffer.NumElements = accum_buffer.size() / sizeof(glm::vec4);
+        buffer_uav_desc.Buffer.StructureByteStride = 3 * sizeof(glm::vec4);  // AccumPixel = 3 x float4
+        buffer_uav_desc.Buffer.NumElements = accum_buffer.size() / (3 * sizeof(glm::vec4));
         buffer_uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
         device->CreateUnorderedAccessView(accum_buffer.get(), nullptr, &buffer_uav_desc, heap_handle);
         heap_handle.ptr +=

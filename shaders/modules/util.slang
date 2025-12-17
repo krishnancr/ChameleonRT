@@ -14,6 +14,13 @@ static const int PRIMARY_RAY = 0;
 static const int OCCLUSION_RAY = 1;
 static const int MAX_PATH_DEPTH = 5;
 
+// Accumulation buffer pixel structure for progressive rendering and OIDN
+struct AccumPixel {
+    float4 color;   // RGB illumination + alpha
+    float4 albedo;  // RGB first-hit surface color + alpha
+    float4 normal;  // XYZ first-hit normal + alpha
+};
+
 // Convert linear color value to sRGB
 float linear_to_srgb(float x) {
     if (x <= 0.0031308f) {

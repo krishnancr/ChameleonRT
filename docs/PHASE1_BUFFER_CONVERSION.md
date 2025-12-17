@@ -1,5 +1,12 @@
 # Phase 1: Buffer Conversion for OIDN Integration
 
+## ✅ STATUS: COMPLETE
+
+**Completion Date:** December 17, 2025  
+**Verified:** Both DXR and Vulkan backends rendering identically to pre-change baseline
+
+---
+
 ## Overview
 
 **Goal:** Convert `accum_buffer` from `Texture2D` to `Buffer` while maintaining identical rendering output.
@@ -111,8 +118,8 @@ RWStructuredBuffer<float4> accum_buffer : register(u1);
 ```
 
 ### Success Criteria
-- [ ] Shader compiles with Slang compiler for DXR target
-- [ ] Shader compiles with Slang compiler for Vulkan/SPIRV target
+- [x] Shader compiles with Slang compiler for DXR target
+- [x] Shader compiles with Slang compiler for Vulkan/SPIRV target
 
 ---
 
@@ -134,7 +141,7 @@ RWStructuredBuffer<float4> accum_buffer : register(u1);
 ```
 
 ### Success Criteria
-- [ ] Header compiles without errors
+- [x] Header compiles without errors
 
 ---
 
@@ -216,8 +223,8 @@ Find the accum_buffer UAV creation.
 ```
 
 ### Success Criteria
-- [ ] DXR backend compiles without errors
-- [ ] DXR backend links without errors
+- [x] DXR backend compiles without errors
+- [x] DXR backend links without errors
 
 ---
 
@@ -239,7 +246,7 @@ Find the accum_buffer UAV creation.
 ```
 
 ### Success Criteria
-- [ ] Header compiles without errors
+- [x] Header compiles without errors
 
 ---
 
@@ -359,8 +366,8 @@ Find the descriptor layout builder and change binding 2 from `STORAGE_IMAGE` to 
 ```
 
 ### Success Criteria
-- [ ] Vulkan backend compiles without errors
-- [ ] Vulkan backend links without errors
+- [x] Vulkan backend compiles without errors
+- [x] Vulkan backend links without errors
 
 ---
 
@@ -392,12 +399,12 @@ cmake --build . --target crt_vulkan --config Release
    ```
 
 ### Success Criteria
-- [ ] DXR backend renders scene without crashes
-- [ ] Vulkan backend renders scene without crashes
-- [ ] Progressive accumulation works (image converges over frames)
-- [ ] No visual artifacts or corruption
-- [ ] Output is visually identical to pre-change (can screenshot compare)
-- [ ] Frame rate is similar to pre-change (no major performance regression)
+- [x] DXR backend renders scene without crashes
+- [x] Vulkan backend renders scene without crashes
+- [x] Progressive accumulation works (image converges over frames)
+- [x] No visual artifacts or corruption
+- [x] Output is visually identical to pre-change (can screenshot compare)
+- [x] Frame rate is similar to pre-change (no major performance regression)
 
 ---
 

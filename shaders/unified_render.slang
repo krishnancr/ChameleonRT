@@ -14,7 +14,7 @@ import modules.lights;
 // Vulkan bindings (all in Set 0)
 [[vk::binding(0, 0)]] RaytracingAccelerationStructure scene;
 [[vk::binding(1, 0)]] RWTexture2D<float4> outputTexture;
-[[vk::binding(2, 0)]] RWStructuredBuffer<float4> accum_buffer;
+[[vk::binding(2, 0)]] RWStructuredBuffer<AccumPixel> accum_buffer;
 #ifdef REPORT_RAY_STATS
 [[vk::binding(6, 0)]] RWTexture2D<uint> ray_stats;
 #endif
@@ -42,7 +42,7 @@ import modules.lights;
 // DXR register bindings
 RaytracingAccelerationStructure scene : register(t0);
 RWTexture2D<float4> outputTexture : register(u0);
-RWStructuredBuffer<float4> accum_buffer : register(u1);
+RWStructuredBuffer<AccumPixel> accum_buffer : register(u1);
 #ifdef REPORT_RAY_STATS
 RWTexture2D<uint> ray_stats : register(u2);
 #endif
@@ -192,6 +192,8 @@ void RayGen()
     
     // ===== MULTI-SAMPLE ANTI-ALIASING  =====
     float3 illum = float3(0.0f);
+    float3 first_albedo = float3(0.0f);  // First-hit albedo for OIDN
+    float3 first_normal = float3(0.0f);  // First-hit normal for OIDN
     
     for (uint s = 0; s < samples_per_pixel; ++s) {
         // Initialize RNG for this sample (unique seed per sample)
@@ -243,6 +245,11 @@ void RayGen()
         // Miss? Add sky color and terminate
         if (payload.color_dist.w <= 0.0f) {
             sample_illum += path_throughput * payload.color_dist.rgb;  // Sky color from Miss shader
+            // Capture first-hit data for OIDN (sky color as albedo, no normal for miss)
+            if (bounce == 0) {
+                first_albedo += payload.color_dist.rgb;
+                // first_normal stays 0 for sky miss
+            }
             break;
         }
         
@@ -279,6 +286,12 @@ void RayGen()
         float3 v_x, v_y;
         float3 v_z = normal;
         ortho_basis(v_x, v_y, v_z);
+        
+        // Capture first-hit albedo and normal for OIDN
+        if (bounce == 0) {
+            first_albedo += mat.base_color;
+            first_normal += v_z;
+        }
         
         // ===== DIRECT LIGHTING with MIS (Multiple Importance Sampling) =====
         float3 illum = float3(0.0f);
@@ -427,13 +440,27 @@ void RayGen()
     
     // Average all samples
     illum = illum / float(samples_per_pixel);
+    first_albedo = first_albedo / float(samples_per_pixel);
+    first_normal = first_normal / float(samples_per_pixel);
     
     // ===== PROGRESSIVE ACCUMULATION (Task 3.4.5) =====
     // Accumulate across frames for temporal convergence
     uint pixel_idx = pixel.y * uint(dims.x) + pixel.x;
-    float4 accum_color = accum_buffer[pixel_idx];
+    
+    // Accumulate color
+    float4 accum_color = accum_buffer[pixel_idx].color;
     accum_color = (float4(illum, 1.0) + frame_id * accum_color) / (frame_id + 1);
-    accum_buffer[pixel_idx] = accum_color;
+    accum_buffer[pixel_idx].color = accum_color;
+    
+    // Accumulate albedo
+    float4 accum_albedo = accum_buffer[pixel_idx].albedo;
+    accum_albedo = (float4(first_albedo, 1.0) + frame_id * accum_albedo) / (frame_id + 1);
+    accum_buffer[pixel_idx].albedo = accum_albedo;
+    
+    // Accumulate normal
+    float4 accum_normal = accum_buffer[pixel_idx].normal;
+    accum_normal = (float4(first_normal, 1.0) + frame_id * accum_normal) / (frame_id + 1);
+    accum_buffer[pixel_idx].normal = accum_normal;
     
     // ===== sRGB CONVERSION (Task 3.4.6) =====
     // Convert linear accumulated color to sRGB for display
