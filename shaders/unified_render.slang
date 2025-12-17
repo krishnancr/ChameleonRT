@@ -14,7 +14,7 @@ import modules.lights;
 // Vulkan bindings (all in Set 0)
 [[vk::binding(0, 0)]] RaytracingAccelerationStructure scene;
 [[vk::binding(1, 0)]] RWTexture2D<float4> outputTexture;
-[[vk::binding(2, 0)]] RWTexture2D<float4> accum_buffer;
+[[vk::binding(2, 0)]] RWStructuredBuffer<float4> accum_buffer;
 #ifdef REPORT_RAY_STATS
 [[vk::binding(6, 0)]] RWTexture2D<uint> ray_stats;
 #endif
@@ -42,7 +42,7 @@ import modules.lights;
 // DXR register bindings
 RaytracingAccelerationStructure scene : register(t0);
 RWTexture2D<float4> outputTexture : register(u0);
-RWTexture2D<float4> accum_buffer : register(u1);
+RWStructuredBuffer<float4> accum_buffer : register(u1);
 #ifdef REPORT_RAY_STATS
 RWTexture2D<uint> ray_stats : register(u2);
 #endif
@@ -430,9 +430,10 @@ void RayGen()
     
     // ===== PROGRESSIVE ACCUMULATION (Task 3.4.5) =====
     // Accumulate across frames for temporal convergence
-    float4 accum_color = accum_buffer[pixel];
+    uint pixel_idx = pixel.y * uint(dims.x) + pixel.x;
+    float4 accum_color = accum_buffer[pixel_idx];
     accum_color = (float4(illum, 1.0) + frame_id * accum_color) / (frame_id + 1);
-    accum_buffer[pixel] = accum_color;
+    accum_buffer[pixel_idx] = accum_color;
     
     // ===== sRGB CONVERSION (Task 3.4.6) =====
     // Convert linear accumulated color to sRGB for display

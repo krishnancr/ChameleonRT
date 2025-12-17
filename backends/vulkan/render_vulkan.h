@@ -35,7 +35,8 @@ struct RenderVulkan : RenderBackend {
     size_t global_uv_count = 0;
     size_t mesh_desc_count = 0;
 
-    std::shared_ptr<vkrt::Texture2D> render_target, accum_buffer;
+    std::shared_ptr<vkrt::Texture2D> render_target;
+    std::shared_ptr<vkrt::Buffer> accum_buffer;
 
 #ifdef REPORT_RAY_STATS
     std::shared_ptr<vkrt::Texture2D> ray_stats;

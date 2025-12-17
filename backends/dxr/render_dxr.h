@@ -40,7 +40,8 @@ struct RenderDXR : RenderBackend {
     size_t mesh_desc_count = 0;
     size_t instance_count = 0;
 
-    dxr::Texture2D render_target, accum_buffer, ray_stats;
+    dxr::Texture2D render_target, ray_stats;
+    dxr::Buffer accum_buffer;
     std::vector<dxr::Texture2D> textures;
 
     std::vector<dxr::BottomLevelBVH> meshes;

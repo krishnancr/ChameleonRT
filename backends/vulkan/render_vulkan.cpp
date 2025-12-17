@@ -106,10 +106,9 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                                 VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 
-    accum_buffer = vkrt::Texture2D::device(*device,
-                                           glm::uvec2(fb_width, fb_height),
-                                           VK_FORMAT_R32G32B32A32_SFLOAT,
-                                           VK_IMAGE_USAGE_STORAGE_BIT);
+    accum_buffer = vkrt::Buffer::device(*device,
+                                        sizeof(glm::vec4) * fb_width * fb_height,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     img_readback_buf = vkrt::Buffer::host(
         *device, img.size() * render_target->pixel_size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
@@ -133,9 +132,9 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
 
 #ifndef REPORT_RAY_STATS
-        std::array<VkImageMemoryBarrier, 2> barriers = {};
+        std::array<VkImageMemoryBarrier, 1> barriers = {};
 #else
-        std::array<VkImageMemoryBarrier, 3> barriers = {};
+        std::array<VkImageMemoryBarrier, 2> barriers = {};
 #endif
         for (auto &b : barriers) {
             b = VkImageMemoryBarrier{};
@@ -149,9 +148,8 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
             b.subresourceRange.layerCount = 1;
         }
         barriers[0].image = render_target->image_handle();
-        barriers[1].image = accum_buffer->image_handle();
 #ifdef REPORT_RAY_STATS
-        barriers[2].image = ray_stats->image_handle();
+        barriers[1].image = ray_stats->image_handle();
 #endif
 
         vkCmdPipelineBarrier(command_buffer,
@@ -187,7 +185,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     if (desc_set != VK_NULL_HANDLE) {
         vkrt::DescriptorSetUpdater()
             .write_storage_image(desc_set, 1, render_target)
-            .write_storage_image(desc_set, 2, accum_buffer)
+            .write_ssbo(desc_set, 2, accum_buffer)
 #ifdef REPORT_RAY_STATS
             .write_storage_image(desc_set, 6, ray_stats)
 #endif
@@ -905,7 +903,7 @@ void RenderVulkan::build_raytracing_pipeline()
             .add_binding(
                 1, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
-                2, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+                2, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
                 3, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
@@ -1087,7 +1085,7 @@ void RenderVulkan::build_shader_descriptor_table()
     auto updater = vkrt::DescriptorSetUpdater()
                        .write_acceleration_structure(desc_set, 0, scene_bvh)
                        .write_storage_image(desc_set, 1, render_target)
-                       .write_storage_image(desc_set, 2, accum_buffer)
+                       .write_ssbo(desc_set, 2, accum_buffer)
                        .write_ubo(desc_set, 3, view_param_buf)
                        .write_ssbo(desc_set, 4, mat_params)
                        .write_ssbo(desc_set, 5, light_params);
