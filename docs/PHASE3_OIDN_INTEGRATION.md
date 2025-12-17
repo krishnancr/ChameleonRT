@@ -638,6 +638,24 @@ In `build_descriptor_heap()`, add UAV for denoise_buffer:
 
 ## Task 3.3: Vulkan Backend - OIDN Integration
 
+### Overview
+
+Following the successful DXR implementation, we'll replicate the same approach for Vulkan:
+1. **Add OIDN headers and member variables**
+2. **Create shared buffers** with external memory support
+3. **Initialize OIDN device and filter**
+4. **Extend Slang shader compiler** with `compileSlangToSPIRV()` for compute shaders
+5. **Create tonemap.slang compute shader** (same as DXR, but targeting SPIR-V)
+6. **Execute pipeline**: Ray trace → GPU sync → OIDN → Tonemap → Display
+
+**Key Differences from DXR:**
+- External memory: VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32/FD/DMABuf (vs D3D12_HEAP_FLAG_SHARED)
+- Shader target: SPIR-V (vs DXIL)
+- Sync: Vulkan fences/semaphores (vs D3D12 fences)
+- Compute dispatch: vkCmdDispatch (vs ID3D12CommandList::Dispatch)
+
+---
+
 ### 3.3.1 Add Headers and Member Variables
 
 **File:** `backends/vulkan/render_vulkan.h`
@@ -655,14 +673,182 @@ In `build_descriptor_heap()`, add UAV for denoise_buffer:
     std::shared_ptr<vkrt::Buffer> denoise_buffer;
     oidn::DeviceRef oidn_device;
     oidn::FilterRef oidn_filter;
+    
+    // Tonemap compute pipeline (Slang-only, same as DXR approach)
+    VkPipelineLayout tonemap_pipeline_layout;
+    VkPipeline tonemap_pipeline;
+    VkCommandBuffer tonemap_cmd_buffer;
 #endif
 ```
 
-### 3.3.2 Initialize OIDN and Create Shared Buffers
+---
+
+### 3.3.2 Extend Slang Shader Compiler for SPIR-V Compute Shaders
+
+**File:** `util/slang_shader_compiler.h`
+
+**Add new method declaration:**
+```cpp
+/**
+ * Compile Slang to SPIR-V Compute Shader (for Vulkan Compute)
+ * Similar to compileSlangToComputeDXIL but targets SPIR-V
+ * @param source Slang shader source code with compute shader entry point
+ * @param entryPoint Entry point function name (e.g., "main")
+ * @param searchPaths Directories to search for imported modules (optional)
+ * @param defines Preprocessor defines (optional)
+ * @return Compiled shader blob or nullopt on failure
+ */
+std::optional<ShaderBlob> compileSlangToComputeSPIRV(
+    const std::string& source,
+    const std::string& entryPoint,
+    const std::vector<std::string>& searchPaths = {},
+    const std::vector<std::string>& defines = {}
+);
+```
+
+**File:** `util/slang_shader_compiler.cpp`
+
+**Add implementation (pattern matching compileSlangToComputeDXIL):**
+```cpp
+std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToComputeSPIRV(
+    const std::string& source,
+    const std::string& entryPoint,
+    const std::vector<std::string>& searchPaths,
+    const std::vector<std::string>& defines
+) {
+    lastError.clear();
+    
+    try {
+        // Setup SPIR-V target with compute shader profile (glsl_450)
+        slang::TargetDesc targetDesc = {};
+        targetDesc.format = SLANG_SPIRV;
+        targetDesc.profile = globalSession->findProfile("glsl_450");
+        
+        if (!targetDesc.profile) {
+            lastError = "Failed to find glsl_450 profile for SPIR-V compute shader";
+            return std::nullopt;
+        }
+        
+        // Create session with SPIR-V target
+        slang::SessionDesc sessionDesc = {};
+        sessionDesc.targets = &targetDesc;
+        sessionDesc.targetCount = 1;
+        
+        std::vector<slang::CompilerOptionEntry> compilerOptions;
+        for (const auto& searchPath : searchPaths) {
+            compilerOptions.push_back({
+                slang::CompilerOptionName::Include,
+                {slang::CompilerOptionValueKind::String, {searchPath.c_str()}}
+            });
+        }
+        sessionDesc.compilerOptionEntries = compilerOptions.data();
+        sessionDesc.compilerOptionEntryCount = compilerOptions.size();
+        
+        slang::ISession* session = nullptr;
+        if (SLANG_FAILED(globalSession->createSession(sessionDesc, &session))) {
+            lastError = "Failed to create Slang session for SPIR-V compute shader";
+            return std::nullopt;
+        }
+        
+        // Prepend defines to source
+        std::string sourceWithDefines;
+        for (const auto& define : defines) {
+            sourceWithDefines += "#define " + define + "\n";
+        }
+        sourceWithDefines += source;
+        
+        // Load module
+        slang::IModule* module = session->loadModuleFromSourceString(
+            "tonemap",
+            "tonemap.slang",
+            sourceWithDefines.c_str()
+        );
+        
+        if (!module) {
+            lastError = "Failed to load Slang module: " + getDiagnostics(session);
+            session->release();
+            return std::nullopt;
+        }
+        
+        // Find entry point by name
+        slang::IEntryPoint* computeEntryPoint = nullptr;
+        module->findEntryPointByName(entryPoint.c_str(), &computeEntryPoint);
+        
+        if (!computeEntryPoint) {
+            lastError = "Failed to find entry point '" + entryPoint + "' in module";
+            session->release();
+            return std::nullopt;
+        }
+        
+        // Create composite program (module + entry point)
+        std::vector<slang::IComponentType*> components = {module, computeEntryPoint};
+        slang::IComponentType* compositeProgram = nullptr;
+        
+        ComPtr<slang::IBlob> diagnosticsBlob;
+        SlangResult result = session->createCompositeComponentType(
+            components.data(),
+            components.size(),
+            &compositeProgram,
+            diagnosticsBlob.writeRef()
+        );
+        
+        if (SLANG_FAILED(result)) {
+            lastError = "Failed to create composite program: ";
+            if (diagnosticsBlob) {
+                lastError += std::string((const char*)diagnosticsBlob->getBufferPointer());
+            }
+            session->release();
+            return std::nullopt;
+        }
+        
+        // Get SPIR-V target code
+        ComPtr<slang::IBlob> spirvCode;
+        result = compositeProgram->getTargetCode(0, spirvCode.writeRef(), diagnosticsBlob.writeRef());
+        
+        if (SLANG_FAILED(result)) {
+            lastError = "Failed to generate SPIR-V code: ";
+            if (diagnosticsBlob) {
+                lastError += std::string((const char*)diagnosticsBlob->getBufferPointer());
+            }
+            compositeProgram->release();
+            session->release();
+            return std::nullopt;
+        }
+        
+        // Create shader blob
+        ShaderBlob shaderBlob;
+        shaderBlob.target = ShaderTarget::SPIRV;
+        shaderBlob.entryPoint = entryPoint;
+        shaderBlob.stage = ShaderStage::Compute;
+        shaderBlob.bytecode.resize(spirvCode->getBufferSize());
+        std::memcpy(shaderBlob.bytecode.data(), spirvCode->getBufferPointer(), spirvCode->getBufferSize());
+        
+        // Cleanup
+        compositeProgram->release();
+        session->release();
+        
+        return shaderBlob;
+        
+    } catch (const std::exception& e) {
+        lastError = std::string("Exception during SPIR-V compute compilation: ") + e.what();
+        return std::nullopt;
+    }
+}
+```
+
+**Key Points:**
+- Profile: `glsl_450` (Vulkan compute shader profile, equivalent to sm_6_0 for DXIL)
+- Target: `SLANG_SPIRV` instead of `SLANG_DXIL`
+- Output: SPIR-V bytecode (uint32_t words) for VkShaderModule creation
+- Pattern: Nearly identical to compileSlangToComputeDXIL, just different target
+
+---
+
+### 3.3.3 Initialize OIDN and Create Shared Buffers
 
 **File:** `backends/vulkan/render_vulkan.cpp`
 
-At the beginning of `initialize()`:
+**At the beginning of `initialize()`:**
 
 ```cpp
 #ifdef ENABLE_OIDN
@@ -706,7 +892,7 @@ At the beginning of `initialize()`:
 #endif
 ```
 
-Modify buffer creation:
+**Modify buffer creation:**
 
 ```cpp
 #ifdef ENABLE_OIDN
@@ -730,7 +916,7 @@ Modify buffer creation:
 #endif
 ```
 
-Add filter setup:
+**Add filter setup:**
 
 ```cpp
 #ifdef ENABLE_OIDN
@@ -768,7 +954,7 @@ Add filter setup:
                              0, sizeof(glm::vec4));
 
         oidn_filter.set("hdr", true);
-        oidn_filter.set("quality", oidn::Quality::Balanced);
+        oidn_filter.set("quality", oidn::Quality::High);  // Match DXR quality setting
 
         oidn_filter.commit();
         if (oidn_device.getError() != oidn::Error::None)
@@ -777,40 +963,211 @@ Add filter setup:
 #endif
 ```
 
-**Reference (AfraChameleonRT render_vulkan.cpp lines 146-219):**
-```cpp
-#ifdef ENABLE_OIDN
-    accum_buffer = vkrt::Buffer::device(*device,
-                                        3 * sizeof(glm::vec4) * fb_width * fb_height,
-                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                        0,
-                                        external_mem_type);
+---
 
-    denoise_buffer = vkrt::Buffer::device(*device,
-                                          sizeof(glm::vec4) * fb_width * fb_height,
-                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                          0,
-                                          external_mem_type);
-// ... filter setup with struct-based layout ...
-    oidn_filter.setImage("color",  input_buffer,  oidn::Format::Float3, fb_width, fb_height,
-                         0 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
-    oidn_filter.setImage("albedo", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
-                         1 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
-    oidn_filter.setImage("normal", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
-                         2 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
-#endif
-```
+### 3.3.4 Compile Tonemap Compute Shader (Slang to SPIR-V)
 
-### 3.3.3 Execute Denoising After Render
+**File:** `backends/vulkan/render_vulkan.cpp`
 
-In `render()`:
+**In `initialize()`, after OIDN filter setup:**
 
 ```cpp
 #ifdef ENABLE_OIDN
-    // Denoise the frame
-    oidn_filter.execute();
+    // Compile tonemap compute shader from Slang (same as DXR approach)
+    auto tonemap_source_opt = chameleonrt::SlangShaderCompiler::loadShaderSource("shaders/tonemap.slang");
+    if (!tonemap_source_opt) {
+        throw std::runtime_error("Failed to load shaders/tonemap.slang");
+    }
+    
+    std::vector<std::string> tonemap_defines;
+    tonemap_defines.push_back("ENABLE_OIDN");
+    
+    auto tonemap_blob = slangCompiler.compileSlangToComputeSPIRV(
+        *tonemap_source_opt,
+        "main",
+        {"shaders"},
+        tonemap_defines);
+    
+    if (!tonemap_blob) {
+        std::string error = slangCompiler.getLastError();
+        throw std::runtime_error("Tonemap shader compilation failed: " + error);
+    }
+    
+    // Create VkShaderModule from SPIR-V bytecode
+    VkShaderModuleCreateInfo shader_module_info = {};
+    shader_module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shader_module_info.codeSize = tonemap_blob->bytecode.size();
+    shader_module_info.pCode = reinterpret_cast<const uint32_t*>(tonemap_blob->bytecode.data());
+    
+    VkShaderModule tonemap_shader_module;
+    CHECK_VULKAN(vkCreateShaderModule(device->logical_device(),
+                                     &shader_module_info,
+                                     nullptr,
+                                     &tonemap_shader_module));
+    
+    // Create compute pipeline layout (matches descriptor set layout from ray tracing)
+    VkPipelineLayoutCreateInfo layout_info = {};
+    layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_info.setLayoutCount = 1;
+    layout_info.pSetLayouts = &desc_set_layout;  // Reuse ray tracing descriptor layout
+    
+    CHECK_VULKAN(vkCreatePipelineLayout(device->logical_device(),
+                                       &layout_info,
+                                       nullptr,
+                                       &tonemap_pipeline_layout));
+    
+    // Create compute pipeline
+    VkComputePipelineCreateInfo pipeline_info = {};
+    pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipeline_info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipeline_info.stage.module = tonemap_shader_module;
+    pipeline_info.stage.pName = "main";
+    pipeline_info.layout = tonemap_pipeline_layout;
+    
+    CHECK_VULKAN(vkCreateComputePipelines(device->logical_device(),
+                                         VK_NULL_HANDLE,
+                                         1,
+                                         &pipeline_info,
+                                         nullptr,
+                                         &tonemap_pipeline));
+    
+    // Clean up shader module (no longer needed after pipeline creation)
+    vkDestroyShaderModule(device->logical_device(), tonemap_shader_module, nullptr);
+    
+    // Allocate command buffer for tonemap dispatch
+    VkCommandBufferAllocateInfo cmd_buf_info = {};
+    cmd_buf_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmd_buf_info.commandPool = command_pool;
+    cmd_buf_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmd_buf_info.commandBufferCount = 1;
+    
+    CHECK_VULKAN(vkAllocateCommandBuffers(device->logical_device(),
+                                         &cmd_buf_info,
+                                         &tonemap_cmd_buffer));
 #endif
 ```
+
+---
+
+### 3.3.5 Execute Pipeline: Ray Trace → GPU Sync → OIDN → Tonemap
+
+**File:** `backends/vulkan/render_vulkan.cpp`
+
+**In `render()` method:**
+
+```cpp
+// 1. Execute ray tracing
+vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence);
+
+// 2. Wait for GPU completion (critical for OIDN)
+vkWaitForFences(device->logical_device(), 1, &fence, VK_TRUE, UINT64_MAX);
+vkResetFences(device->logical_device(), 1, &fence);
+
+#ifdef ENABLE_OIDN
+// 3. OIDN denoising (CPU-side, reads GPU buffer via shared memory)
+oidn_filter.execute();
+
+// 4. Tonemap compute pass
+{
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    
+    vkBeginCommandBuffer(tonemap_cmd_buffer, &begin_info);
+    
+    // Bind pipeline and descriptor set
+    vkCmdBindPipeline(tonemap_cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, tonemap_pipeline);
+    vkCmdBindDescriptorSets(tonemap_cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                           tonemap_pipeline_layout, 0, 1, &desc_set, 0, nullptr);
+    
+    // Dispatch compute shader (16x16 workgroups, matching DXR)
+    uint32_t workgroup_count_x = (fb_width + 15) / 16;
+    uint32_t workgroup_count_y = (fb_height + 15) / 16;
+    vkCmdDispatch(tonemap_cmd_buffer, workgroup_count_x, workgroup_count_y, 1);
+    
+    vkEndCommandBuffer(tonemap_cmd_buffer);
+    
+    // Submit tonemap command buffer
+    VkSubmitInfo tonemap_submit = {};
+    tonemap_submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    tonemap_submit.commandBufferCount = 1;
+    tonemap_submit.pCommandBuffers = &tonemap_cmd_buffer;
+    
+    vkQueueSubmit(device->graphics_queue(), 1, &tonemap_submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(device->graphics_queue());  // Wait for tonemap completion
+}
+#endif
+```
+
+**Key Points:**
+- Same pipeline order as DXR: ray trace → sync → OIDN → tonemap
+- Workgroup size: 16x16 threads (matches tonemap.slang numthreads)
+- Reuses descriptor set from ray tracing (framebuffer, accum_buffer, denoise_buffer all in same set)
+- GPU sync before OIDN is critical (fence wait)
+
+---
+
+### 3.3.6 Update Descriptor Set Bindings
+
+**File:** `backends/vulkan/render_vulkan.cpp`
+
+**Add denoise_buffer binding to descriptor set (if ENABLE_OIDN):**
+
+```cpp
+#ifdef ENABLE_OIDN
+    // Binding 2: denoise_buffer (for tonemap shader)
+    {
+        VkDescriptorBufferInfo buffer_info = {};
+        buffer_info.buffer = denoise_buffer->buffer();
+        buffer_info.offset = 0;
+        buffer_info.range = denoise_buffer->size();
+        
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = desc_set;
+        write.dstBinding = 2;  // Matches register(u2) in tonemap.slang
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &buffer_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &write, 0, nullptr);
+    }
+#endif
+```
+
+---
+
+### 3.3.7 Summary - Vulkan Implementation Checklist
+
+**Files Modified:**
+- ✅ `util/slang_shader_compiler.h` - Add `compileSlangToComputeSPIRV()` declaration
+- ✅ `util/slang_shader_compiler.cpp` - Implement SPIR-V compute shader compilation
+- ✅ `backends/vulkan/render_vulkan.h` - Add OIDN headers, member variables, tonemap pipeline objects
+- ✅ `backends/vulkan/render_vulkan.cpp` - Full OIDN integration:
+  - Device initialization with UUID
+  - Shared buffers with external memory
+  - Filter configuration (RT, High quality, HDR)
+  - Tonemap shader compilation (Slang → SPIR-V)
+  - Compute pipeline creation
+  - Render flow: ray trace → sync → OIDN → tonemap → display
+
+**Shader Reuse:**
+- ✅ `shaders/tonemap.slang` - Same file as DXR (already created)
+- No changes needed - ENABLE_OIDN preprocessor handles both backends
+
+**Key Differences from DXR:**
+- External memory: Platform-specific (Win32/FD/DMABuf) vs D3D12_HEAP_FLAG_SHARED
+- Shader compilation: `compileSlangToComputeSPIRV()` vs `compileSlangToComputeDXIL()`
+- Shader profile: `glsl_450` vs `sm_6_0`
+- Pipeline: VkPipeline vs ID3D12PipelineState
+- Dispatch: vkCmdDispatch vs ID3D12CommandList::Dispatch
+
+**Quality Settings (Match DXR):**
+- ✅ Quality: High
+- ✅ HDR: Enabled
+- ✅ Filter: RT (Ray Tracing optimized)
+- ✅ Accumulation: Enabled (frame_id increments normally)
 
 ### 3.3.4 Add denoise_buffer Descriptor Binding
 

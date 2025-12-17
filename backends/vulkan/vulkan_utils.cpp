@@ -23,6 +23,14 @@ PFN_vkGetAccelerationStructureDeviceAddressKHR GetAccelerationStructureDeviceAdd
     nullptr;
 PFN_vkGetAccelerationStructureBuildSizesKHR GetAccelerationStructureBuildSizesKHR = nullptr;
 
+#ifdef ENABLE_OIDN
+#ifdef _WIN32
+PFN_vkGetMemoryWin32HandleKHR GetMemoryWin32HandleKHR = nullptr;
+#else
+PFN_vkGetMemoryFdKHR GetMemoryFdKHR = nullptr;
+#endif
+#endif
+
 void load_khr_ray_tracing(VkDevice &device)
 {
     CmdTraceRaysKHR = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(
@@ -52,6 +60,19 @@ void load_khr_ray_tracing(VkDevice &device)
             vkGetDeviceProcAddr(device, "vkGetAccelerationStructureBuildSizesKHR"));
 }
 
+#ifdef ENABLE_OIDN
+void load_khr_external_memory(VkDevice &device)
+{
+#ifdef _WIN32
+    GetMemoryWin32HandleKHR = reinterpret_cast<PFN_vkGetMemoryWin32HandleKHR>(
+        vkGetDeviceProcAddr(device, "vkGetMemoryWin32HandleKHR"));
+#else
+    GetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
+        vkGetDeviceProcAddr(device, "vkGetMemoryFdKHR"));
+#endif
+}
+#endif
+
 Device::Device(const std::vector<std::string> &instance_extensions,
                const std::vector<std::string> &logical_device_extensions)
 {
@@ -60,6 +81,9 @@ Device::Device(const std::vector<std::string> &instance_extensions,
     make_logical_device(logical_device_extensions);
 
     load_khr_ray_tracing(device);
+#ifdef ENABLE_OIDN
+    load_khr_external_memory(device);
+#endif
 
     // Query the properties we'll use frequently
     vkGetPhysicalDeviceMemoryProperties(vk_physical_device, &mem_props);
@@ -176,7 +200,8 @@ uint32_t Device::memory_type_index(uint32_t type_filter, VkMemoryPropertyFlags p
     throw std::runtime_error("failed to find appropriate memory");
 }
 
-VkDeviceMemory Device::alloc(size_t nbytes, uint32_t type_filter, VkMemoryPropertyFlags props)
+VkDeviceMemory Device::alloc(size_t nbytes, uint32_t type_filter, VkMemoryPropertyFlags props,
+                             VkExternalMemoryHandleTypeFlags external_mem_types)
 {
     VkMemoryAllocateInfo info = {};
     info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -189,6 +214,16 @@ VkDeviceMemory Device::alloc(size_t nbytes, uint32_t type_filter, VkMemoryProper
         flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
         info.pNext = &flags;
     }
+
+#ifdef ENABLE_OIDN
+    VkExportMemoryAllocateInfo export_info{};
+    if (external_mem_types) {
+        export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+        export_info.handleTypes = external_mem_types;
+        export_info.pNext = info.pNext;
+        info.pNext = &export_info;
+    }
+#endif
 
     VkDeviceMemory mem = VK_NULL_HANDLE;
     CHECK_VULKAN(vkAllocateMemory(device, &info, nullptr, &mem));
@@ -280,9 +315,30 @@ void Device::select_physical_device()
                                    VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) == 0;
             });
 
+#ifdef ENABLE_OIDN
+#ifndef _WIN32
+        auto external_mem_fd = std::find_if(
+            extensions.begin(), extensions.end(), [](const VkExtensionProperties &e) {
+                return std::strcmp(e.extensionName,
+                                   VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) == 0;
+            });
+        auto external_mem_dma_buf = std::find_if(
+            extensions.begin(), extensions.end(), [](const VkExtensionProperties &e) {
+                return std::strcmp(e.extensionName,
+                                   VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) == 0;
+            });
+#endif
+#endif
+
         if (khr_accel_struct != extensions.end() && khr_ray_pipeline != extensions.end()) {
             vk_physical_device = d;
             vk_physical_device_limits = properties.limits;
+#ifdef ENABLE_OIDN
+#ifndef _WIN32
+            vk_external_mem_fd = external_mem_fd != extensions.end();
+            vk_external_mem_dma_buf = external_mem_dma_buf != extensions.end();
+#endif
+#endif
             break;
         }
     }
@@ -359,7 +415,25 @@ void Device::make_logical_device(const std::vector<std::string> &extensions)
         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
         VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
         VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-        VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME};
+        VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+#ifdef ENABLE_OIDN
+        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+#ifdef _WIN32
+        VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
+#else
+        // Add FD/DMABuf extensions if available
+#endif
+#endif
+    };
+
+#ifdef ENABLE_OIDN
+#ifndef _WIN32
+    if (vk_external_mem_fd)
+        device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+    if (vk_external_mem_dma_buf)
+        device_extensions.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+#endif
+#endif
 
     for (const auto &ext : extensions) {
         device_extensions.push_back(ext.c_str());
@@ -398,7 +472,8 @@ VkBufferCreateInfo Buffer::create_info(size_t nbytes, VkBufferUsageFlags usage)
 std::shared_ptr<Buffer> Buffer::make_buffer(Device &device,
                                             size_t nbytes,
                                             VkBufferUsageFlags usage,
-                                            VkMemoryPropertyFlags mem_props)
+                                            VkMemoryPropertyFlags mem_props,
+                                            VkExternalMemoryHandleTypeFlags external_mem_types)
 {
     auto buf = std::make_shared<Buffer>();
     buf->vkdevice = &device;
@@ -406,11 +481,21 @@ std::shared_ptr<Buffer> Buffer::make_buffer(Device &device,
     buf->host_visible = mem_props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 
     auto create_info = Buffer::create_info(nbytes, usage);
+    
+#ifdef ENABLE_OIDN
+    VkExternalMemoryBufferCreateInfo external_mem_create_info{};
+    if (external_mem_types) {
+        external_mem_create_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+        external_mem_create_info.handleTypes = external_mem_types;
+        create_info.pNext = &external_mem_create_info;
+    }
+#endif
+
     CHECK_VULKAN(vkCreateBuffer(device.logical_device(), &create_info, nullptr, &buf->buf));
 
     VkMemoryRequirements mem_reqs = {};
     vkGetBufferMemoryRequirements(device.logical_device(), buf->buf, &mem_reqs);
-    buf->mem = device.alloc(mem_reqs.size, mem_reqs.memoryTypeBits, mem_props);
+    buf->mem = device.alloc(mem_reqs.size, mem_reqs.memoryTypeBits, mem_props, external_mem_types);
 
     vkBindBufferMemory(device.logical_device(), buf->buf, buf->mem, 0);
 
@@ -472,10 +557,11 @@ std::shared_ptr<Buffer> Buffer::host(Device &device,
 std::shared_ptr<Buffer> Buffer::device(Device &device,
                                        size_t nbytes,
                                        VkBufferUsageFlags usage,
-                                       VkMemoryPropertyFlagBits extra_mem_props)
+                                       VkMemoryPropertyFlagBits extra_mem_props,
+                                       VkExternalMemoryHandleTypeFlags external_mem_types)
 {
     return make_buffer(
-        device, nbytes, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | extra_mem_props);
+        device, nbytes, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | extra_mem_props, external_mem_types);
 }
 
 void *Buffer::map()
@@ -518,6 +604,32 @@ VkDeviceAddress Buffer::device_address() const
     buf_info.buffer = buf;
     return vkGetBufferDeviceAddress(vkdevice->logical_device(), &buf_info);
 }
+
+#ifdef ENABLE_OIDN
+#ifdef _WIN32
+HANDLE Buffer::external_mem_handle(VkExternalMemoryHandleTypeFlagBits handle_type)
+{
+    HANDLE handle = NULL;
+    VkMemoryGetWin32HandleInfoKHR info{};
+    info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
+    info.memory = mem;
+    info.handleType = handle_type;
+    CHECK_VULKAN(GetMemoryWin32HandleKHR(vkdevice->logical_device(), &info, &handle));
+    return handle;
+}
+#else
+int Buffer::external_mem_handle(VkExternalMemoryHandleTypeFlagBits handle_type)
+{
+    int fd = 0;
+    VkMemoryGetFdInfoKHR info{};
+    info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    info.memory = mem;
+    info.handleType = handle_type;
+    CHECK_VULKAN(GetMemoryFdKHR(vkdevice->logical_device(), &info, &fd));
+    return fd;
+}
+#endif
+#endif
 
 Texture2D::~Texture2D()
 {
