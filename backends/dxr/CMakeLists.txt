@@ -162,3 +162,7 @@ endif()
 install(TARGETS crt_dxr
     LIBRARY DESTINATION bin)
 
+# Copy OIDN DLLs to output directory
+if(ENABLE_OIDN)
+    copy_oidn_dlls(crt_dxr)
+endif()
