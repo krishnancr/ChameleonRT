@@ -111,6 +111,11 @@ if(ENABLE_SLANG)
         list(APPEND SLANG_SHADER_FILES unified_render.slang)
     endif()
     
+    # Add tonemap shader if OIDN is enabled
+    if(ENABLE_OIDN AND (ENABLE_DXR_SLANG OR ENABLE_VULKAN_SLANG))
+        list(APPEND SLANG_SHADER_FILES tonemap.slang)
+    endif()
+    
     # module files
     set(SLANG_MODULE_FILES
         modules/util.slang

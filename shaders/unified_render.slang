@@ -462,16 +462,18 @@ void RayGen()
     accum_normal = (float4(first_normal, 1.0) + frame_id * accum_normal) / (frame_id + 1);
     accum_buffer[pixel_idx].normal = accum_normal;
     
-    // ===== sRGB CONVERSION (Task 3.4.6) =====
-    // Convert linear accumulated color to sRGB for display
+    // ===== DISPLAY OUTPUT (Task 3.4.6) =====
+    // NOTE: When ENABLE_OIDN is defined, tonemapping is done in a separate compute pass
+    // that reads from denoise_buffer. The ray gen shader only accumulates to accum_buffer.
+#ifndef ENABLE_OIDN
+    // Convert linear accumulated color to sRGB for display (no OIDN path)
     float3 srgb_color = float3(
         linear_to_srgb(accum_color.r),
         linear_to_srgb(accum_color.g),
         linear_to_srgb(accum_color.b)
     );
-    
-    // Write sRGB-corrected color to output
     outputTexture[pixel] = float4(srgb_color, 1.0f);
+#endif
     
 #ifdef REPORT_RAY_STATS
     ray_stats[pixel] = ray_count;

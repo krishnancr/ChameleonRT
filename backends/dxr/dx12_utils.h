@@ -76,7 +76,8 @@ class Buffer : public Resource {
                          size_t nbytes,
                          D3D12_RESOURCE_STATES state,
                          D3D12_HEAP_PROPERTIES props,
-                         D3D12_RESOURCE_DESC desc);
+                         D3D12_RESOURCE_DESC desc,
+                         D3D12_HEAP_FLAGS heap_flags = D3D12_HEAP_FLAG_NONE);
 
 public:
     // Allocate an upload buffer of the desired size
@@ -88,7 +89,8 @@ public:
     static Buffer device(ID3D12Device *device,
                          size_t nbytes,
                          D3D12_RESOURCE_STATES state,
-                         D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE);
+                         D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE,
+                         D3D12_HEAP_FLAGS heap_flags = D3D12_HEAP_FLAG_NONE);
     // Allocate a readback buffer of the desired size
     static Buffer readback(ID3D12Device *device,
                            size_t nbytes,

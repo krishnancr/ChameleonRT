@@ -22,6 +22,9 @@ set(HLSL_COMPILE_DEFNS "")
 if (REPORT_RAY_STATS)
 	set(HLSL_COMPILE_DEFNS "REPORT_RAY_STATS=1")
 endif()
+if (ENABLE_OIDN)
+    list(APPEND HLSL_COMPILE_DEFNS "ENABLE_OIDN=1")
+endif()
 
 # Only create embedded HLSL shaders if we're NOT using Slang
 # When using Slang, shaders are compiled at runtime from .slang files

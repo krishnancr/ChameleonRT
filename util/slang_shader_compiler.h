@@ -99,6 +99,21 @@ public:
     );
     
     /**
+     * Compile Slang to DXIL Compute Shader (for DirectX Compute)
+     * @param source Slang shader source code with compute shader entry point
+     * @param entryPoint Entry point function name (e.g., "main")
+     * @param searchPaths Directories to search for imported modules (optional)
+     * @param defines Preprocessor defines (optional)
+     * @return Compiled shader blob or nullopt on failure
+     */
+    std::optional<ShaderBlob> compileSlangToComputeDXIL(
+        const std::string& source,
+        const std::string& entryPoint,
+        const std::vector<std::string>& searchPaths = {},
+        const std::vector<std::string>& defines = {}
+    );
+    
+    /**
      * Compile Slang to Metal (EXPERIMENTAL - NOT TESTED)
      * @param source Slang shader source code
      * @param entryPoint Entry point function name
