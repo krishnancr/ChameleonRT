@@ -51,12 +51,35 @@ void ArcballCamera::zoom(const float zoom_amount)
     update_camera();
 }
 void ArcballCamera::move(const glm::vec3 &movement) {
+    // Apply speed scaling
+    float effective_speed = movement_speed * speed_multiplier;
+    glm::vec3 scaled_movement = movement * effective_speed;
+    
     // Transform the movement vector from camera space to world space
-    glm::vec4 world_movement = inv_camera * glm::vec4(movement, 0.0f);
+    glm::vec4 world_movement = inv_camera * glm::vec4(scaled_movement, 0.0f);
     
     // Update both the center of rotation and the camera position
     center_translation = glm::translate(glm::vec3(world_movement)) * center_translation;
     update_camera();
+}
+void ArcballCamera::set_scene_bounds(float scene_diagonal) {
+    // Set base speed to 2% of scene diagonal
+    // This provides reasonable movement speed across different scene sizes
+    movement_speed = scene_diagonal * 0.02f;
+    
+    // Ensure minimum speed for very small scenes
+    if (movement_speed < 0.01f) {
+        movement_speed = 0.01f;
+    }
+}
+float ArcballCamera::get_speed_multiplier() const {
+    return speed_multiplier;
+}
+void ArcballCamera::set_speed_multiplier(float multiplier) {
+    speed_multiplier = glm::clamp(multiplier, 0.01f, 100.0f);
+}
+float ArcballCamera::get_movement_speed() const {
+    return movement_speed * speed_multiplier;
 }
 const glm::mat4 &ArcballCamera::transform() const
 {

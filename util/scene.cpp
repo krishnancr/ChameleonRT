@@ -1063,3 +1063,49 @@ void Scene::build_global_buffers()
     }
 }
 
+Scene::Bounds Scene::compute_bounds() const
+{
+    Bounds bounds;
+    
+    if (instances.empty() && parameterized_meshes.empty() && meshes.empty()) {
+        // Fallback for empty scenes
+        bounds.min = glm::vec3(-1.0f);
+        bounds.max = glm::vec3(1.0f);
+        return bounds;
+    }
+    
+    // Iterate through all instances
+    for (const auto &instance : instances) {
+        const auto &pm = parameterized_meshes[instance.parameterized_mesh_id];
+        const auto &mesh = meshes[pm.mesh_id];
+        const glm::mat4 &transform = instance.transform;
+        
+        // Transform mesh vertices by instance transform
+        for (const auto &geom : mesh.geometries) {
+            for (const auto &vertex : geom.vertices) {
+                glm::vec4 world_pos = transform * glm::vec4(vertex, 1.0f);
+                bounds.expand(glm::vec3(world_pos));
+            }
+        }
+    }
+    
+    // Fallback: if no instances, use base meshes
+    if (!bounds.is_valid()) {
+        for (const auto &mesh : meshes) {
+            for (const auto &geom : mesh.geometries) {
+                for (const auto &vertex : geom.vertices) {
+                    bounds.expand(vertex);
+                }
+            }
+        }
+    }
+    
+    // Safety check: ensure we have valid bounds
+    if (!bounds.is_valid()) {
+        bounds.min = glm::vec3(-1.0f);
+        bounds.max = glm::vec3(1.0f);
+    }
+    
+    return bounds;
+}
+

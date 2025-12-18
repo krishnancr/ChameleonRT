@@ -17,6 +17,10 @@ class ArcballCamera {
 	// inv_camera is stored as well to easily compute
 	// eye position and world space rotation axes
 	glm::mat4 camera, inv_camera;
+	
+	// Adaptive movement speed based on scene size
+	float movement_speed = 1.0f;      // Base speed from scene size
+	float speed_multiplier = 1.0f;    // User-adjustable multiplier
 
 public:
 	/* Create an arcball camera focused on some center point
@@ -39,6 +43,16 @@ public:
 	/* Move the camera along its local axes
 	 */
 	void move(const glm::vec3 &movement);
+	/* Set the base movement speed from scene bounds
+	 */
+	void set_scene_bounds(float scene_diagonal);
+	/* Get/set the speed multiplier
+	 */
+	float get_speed_multiplier() const;
+	void set_speed_multiplier(float multiplier);
+	/* Get the effective movement speed (base * multiplier)
+	 */
+	float get_movement_speed() const;
 	// Get the camera transformation matrix
 	const glm::mat4& transform() const;
 	// Get the camera's inverse transformation matrix

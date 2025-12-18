@@ -182,9 +182,15 @@ void run_app(const std::vector<std::string> &args,
     renderer->initialize(win_width, win_height);
 
     std::string scene_info;
+    float scene_diagonal = 10.0f;  // Default fallback value
     {
         Scene scene(scene_file, material_mode);
         scene.samples_per_pixel = samples_per_pixel;
+
+        // Calculate scene-aware movement speed
+        auto scene_bounds = scene.compute_bounds();
+        scene_diagonal = scene_bounds.diagonal();
+        std::cout << "Scene diagonal: " << scene_diagonal << "\n";
 
         std::stringstream ss;
         ss << "Scene '" << scene_file << "':\n"
@@ -214,6 +220,8 @@ void run_app(const std::vector<std::string> &args,
     }
 
     ArcballCamera camera(eye, center, up);
+    camera.set_scene_bounds(scene_diagonal);
+    std::cout << "Base movement speed: " << camera.get_movement_speed() << "\n";
 
     const std::string rt_backend = renderer->name();
     const std::string cpu_brand = get_cpu_brand();
@@ -249,16 +257,16 @@ void run_app(const std::vector<std::string> &args,
                 } else if (event.key.keysym.sym == SDLK_i) {
                     save_image = true;
                 } else if (event.key.keysym.sym == SDLK_s) {
-                    camera.move(glm::vec3(0, 0, -2));
+                    camera.move(glm::vec3(0, 0, -1.0f));
                     camera_changed = true;
                 } else if (event.key.keysym.sym == SDLK_w) {
-                    camera.move(glm::vec3(0, 0, 2));
+                    camera.move(glm::vec3(0, 0, 1.0f));
                     camera_changed = true;
                 } else if (event.key.keysym.sym == SDLK_d) {
-                    camera.move(glm::vec3(-2, 0, 0));
+                    camera.move(glm::vec3(-1.0f, 0, 0));
                     camera_changed = true;
                 } else if (event.key.keysym.sym == SDLK_a) {
-                    camera.move(glm::vec3(2, 0, 0));
+                    camera.move(glm::vec3(1.0f, 0, 0));
                     camera_changed = true;
                 }
             }
