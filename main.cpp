@@ -190,7 +190,6 @@ void run_app(const std::vector<std::string> &args,
         // Calculate scene-aware movement speed
         auto scene_bounds = scene.compute_bounds();
         scene_diagonal = scene_bounds.diagonal();
-        std::cout << "Scene diagonal: " << scene_diagonal << "\n";
 
         std::stringstream ss;
         ss << "Scene '" << scene_file << "':\n"
@@ -221,7 +220,6 @@ void run_app(const std::vector<std::string> &args,
 
     ArcballCamera camera(eye, center, up);
     camera.set_scene_bounds(scene_diagonal);
-    std::cout << "Base movement speed: " << camera.get_movement_speed() << "\n";
 
     const std::string rt_backend = renderer->name();
     const std::string cpu_brand = get_cpu_brand();
@@ -289,7 +287,7 @@ void run_app(const std::vector<std::string> &args,
                     }
                     prev_mouse = cur_mouse;
                 } else if (event.type == SDL_MOUSEWHEEL) {
-                    camera.zoom(event.wheel.y * 5.0);
+                    camera.zoom(event.wheel.y * camera.get_movement_speed());
                     camera_changed = true;
                 }
             }
