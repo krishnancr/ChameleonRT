@@ -416,7 +416,7 @@ void RayGen()
             t_max = 1e20f;
             ++bounce;
             
-            // ===== RUSSIAN ROULETTE TERMINATION (Task 3.4.4) =====
+            // ===== RUSSIAN ROULETTE TERMINATION =====
             // Unbiased early path termination based on throughput
             if (bounce > 3) {
                 float q = max(0.05f, 
@@ -443,7 +443,7 @@ void RayGen()
     first_albedo = first_albedo / float(samples_per_pixel);
     first_normal = first_normal / float(samples_per_pixel);
     
-    // ===== PROGRESSIVE ACCUMULATION (Task 3.4.5) =====
+    // ===== PROGRESSIVE ACCUMULATION =====
     // Accumulate across frames for temporal convergence
     uint pixel_idx = pixel.y * uint(dims.x) + pixel.x;
     
@@ -462,9 +462,9 @@ void RayGen()
     accum_normal = (float4(first_normal, 1.0) + frame_id * accum_normal) / (frame_id + 1);
     accum_buffer[pixel_idx].normal = accum_normal;
     
-    // ===== DISPLAY OUTPUT (Task 3.4.6) =====
+    // ===== DISPLAY OUTPUT =====
     // NOTE: When ENABLE_OIDN is defined, tonemapping is done in a separate compute pass
-    // that reads from denoise_buffer. The ray gen shader only accumulates to accum_buffer.
+    // that reads from denoise_buffer. The raygen shader only accumulates to accum_buffer.
 #ifndef ENABLE_OIDN
     // Convert linear accumulated color to sRGB for display (no OIDN path)
     float3 srgb_color = float3(
