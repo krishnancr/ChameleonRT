@@ -36,6 +36,7 @@ import modules.lights;
 [[vk::binding(12, 0)]] StructuredBuffer<float3> globalNormals;
 [[vk::binding(13, 0)]] StructuredBuffer<float2> globalUVs;
 [[vk::binding(14, 0)]] StructuredBuffer<MeshDesc> meshDescs;
+[[vk::binding(15, 0)]] Sampler2D environment_map;  // Combined image sampler for env map
 [[vk::binding(30, 0)]] Sampler2D textures[];
 [[vk::shader_record]] cbuffer HitGroupData { uint meshDescIndex; }
 #else
@@ -64,6 +65,7 @@ StructuredBuffer<uint3> globalIndices : register(t11, space0);
 StructuredBuffer<float3> globalNormals : register(t12, space0);
 StructuredBuffer<float2> globalUVs : register(t13, space0);
 StructuredBuffer<MeshDesc> meshDescs : register(t14, space0);
+Texture2D<float4> environment_map : register(t15, space0);
 Texture2D textures[] : register(t30, space0);
 SamplerState tex_sampler : register(s0);
 cbuffer HitGroupData : register(b2, space0) { uint meshDescIndex; }
@@ -297,6 +299,8 @@ void RayGen()
         float3 illum = float3(0.0f);
         
         // Iterate through all lights
+        // TODO: For scenes with many lights, optimize by randomly sampling a subset
+        // instead of looping through all lights (compensate with proper weighting)
         for (uint light_idx = 0; light_idx < num_lights; ++light_idx) {
             QuadLight light = lights[light_idx];
             
@@ -487,18 +491,35 @@ void Miss(inout Payload payload)
 {
     payload.color_dist.w = -1.0f;  // Indicates miss
     
-    // Checkered sky pattern (matching HLSL/GLSL)
-    float3 dir = WorldRayDirection();
+    float3 dir = normalize(WorldRayDirection());
+    
+    // Convert direction to UV coordinates (lat-long mapping)
     float u = (1.0f + atan2(dir.x, -dir.z) * M_1_PI) * 0.5f;
     float v = acos(dir.y) * M_1_PI;
     
-    int check_x = int(u * 10.0f);
-    int check_y = int(v * 10.0f);
+    // Check if environment map is available by checking dimensions
+    // Note: Dummy 1x1 texture is used when no env map is loaded, so check width > 1
+    uint width, height;
+    environment_map.GetDimensions(width, height);
     
-    if (dir.y > -0.1f && (check_x + check_y) % 2 == 0) {
-        payload.color_dist.rgb = float3(0.5f, 0.5f, 0.5f);
+    if (width > 1) {
+        // Sample environment map
+        #ifdef VULKAN
+        float4 env_color = environment_map.SampleLevel(float2(u, v), 0);
+        #else
+        float4 env_color = environment_map.SampleLevel(tex_sampler, float2(u, v), 0);
+        #endif
+        payload.color_dist.rgb = env_color.rgb;
     } else {
-        payload.color_dist.rgb = float3(0.1f, 0.1f, 0.1f);
+        // Fallback: checkered sky pattern
+        int check_x = int(u * 10.0f);
+        int check_y = int(v * 10.0f);
+        
+        if (dir.y > -0.1f && (check_x + check_y) % 2 == 0) {
+            payload.color_dist.rgb = float3(0.5f, 0.5f, 0.5f);
+        } else {
+            payload.color_dist.rgb = float3(0.1f, 0.1f, 0.1f);
+        }
     }
 }
 

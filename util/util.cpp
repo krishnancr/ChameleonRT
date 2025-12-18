@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <iostream>
 #ifdef _WIN32
 #include <intrin.h>
 #elif !defined(__aarch64__)
@@ -19,6 +20,11 @@
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+
+#define TINYEXR_USE_MINIZ 0
+#define TINYEXR_USE_STB_ZLIB 1
+#define TINYEXR_IMPLEMENTATION
+#include "tinyexr.h"
 
 std::string pretty_print_count(const double count)
 {
@@ -118,4 +124,105 @@ float linear_to_srgb(float x)
 float luminance(const glm::vec3 &c)
 {
     return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+}
+
+glm::vec4 HDRImage::sample_bilinear(float u, float v) const {
+    if (!data) return glm::vec4(0);
+    
+    // Wrap U (horizontal), clamp V (vertical)
+    u = u - std::floor(u);  // Wrap to [0, 1]
+    v = glm::clamp(v, 0.0f, 1.0f);
+    
+    // Convert to pixel coordinates
+    float x = u * (width - 1);
+    float y = v * (height - 1);
+    
+    int x0 = (int)std::floor(x);
+    int y0 = (int)std::floor(y);
+    int x1 = (x0 + 1) % width;   // Wrap horizontally
+    int y1 = std::min(y0 + 1, height - 1);  // Clamp vertically
+    
+    float fx = x - x0;
+    float fy = y - y0;
+    
+    // Bilinear interpolation
+    glm::vec4 p00 = get_pixel(x0, y0);
+    glm::vec4 p10 = get_pixel(x1, y0);
+    glm::vec4 p01 = get_pixel(x0, y1);
+    glm::vec4 p11 = get_pixel(x1, y1);
+    
+    glm::vec4 p0 = glm::mix(p00, p10, fx);
+    glm::vec4 p1 = glm::mix(p01, p11, fx);
+    
+    return glm::mix(p0, p1, fy);
+}
+
+HDRImage load_environment_map(const std::string& filename) {
+    HDRImage img;
+    std::string ext = get_file_extension(filename);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    
+    std::cout << "Loading environment map: " << filename << std::endl;
+    
+    if (ext == "exr") {
+        // Load HDR using TinyEXR
+        const char* err = nullptr;
+        
+        int ret = LoadEXR(&img.data, &img.width, &img.height, 
+                          filename.c_str(), &err);
+        
+        if (ret != TINYEXR_SUCCESS) {
+            std::string error_msg = "Failed to load EXR file: " + filename;
+            if (err) {
+                error_msg += "\n  Reason: " + std::string(err);
+                FreeEXRErrorMessage(err);
+            }
+            throw std::runtime_error(error_msg);
+        }
+        
+        std::cout << "  Loaded EXR: " << img.width << "x" << img.height << std::endl;
+        
+        // Verify HDR data
+        float max_value = 0.0f;
+        for (int i = 0; i < img.width * img.height * 4; i++) {
+            max_value = std::max(max_value, img.data[i]);
+        }
+        std::cout << "  Max value: " << max_value 
+                  << (max_value > 1.0 ? " (HDR)" : " (LDR?)") << std::endl;
+        
+    } else if (ext == "jpg" || ext == "jpeg" || ext == "png") {
+        // Fallback: Load LDR using stb_image and convert to float
+        std::cout << "  WARNING: Loading LDR image (" << ext 
+                  << ") - will have limited dynamic range for IBL" << std::endl;
+        
+        int channels;
+        unsigned char* ldr_data = stbi_load(filename.c_str(), 
+                                           &img.width, &img.height, 
+                                           &channels, 4);
+        
+        if (!ldr_data) {
+            throw std::runtime_error("Failed to load image: " + filename + 
+                                   "\n  Reason: " + std::string(stbi_failure_reason()));
+        }
+        
+        // Convert to float RGBA
+        size_t pixel_count = img.width * img.height;
+        img.data = (float*)malloc(pixel_count * 4 * sizeof(float));
+        
+        for (size_t i = 0; i < pixel_count * 4; i++) {
+            // Convert sRGB [0,255] to linear [0,1] float
+            img.data[i] = srgb_to_linear(ldr_data[i] / 255.0f);
+        }
+        
+        stbi_image_free(ldr_data);
+        
+        std::cout << "  Loaded LDR (converted to float): " 
+                  << img.width << "x" << img.height << std::endl;
+        
+    } else {
+        throw std::runtime_error("Unsupported environment map format: " + ext + 
+                               " (supported: .exr, .jpg, .png)");
+    }
+    
+    return img;
 }

@@ -46,9 +46,13 @@ bool operator==(const glm::uvec3 &a, const glm::uvec3 &b)
     return a.x == b.x && a.y == b.y && a.z == b.z;
 }
 
-Scene::Scene(const std::string &fname, MaterialMode material_mode)
-    : material_mode(material_mode)
+Scene::Scene(const std::string &fname, MaterialMode material_mode, const std::string &env_map)
+    : material_mode(material_mode), environment_map_path(env_map)
 {
+    if (!environment_map_path.empty()) {
+        std::cout << "Environment map set: " << environment_map_path << "\n";
+    }
+    
     const std::string ext = get_file_extension(fname);
     if (ext == "obj") {
         load_obj(fname);

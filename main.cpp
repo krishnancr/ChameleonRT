@@ -30,6 +30,7 @@ const std::string USAGE =
     "\t-img <x> <y>           Specify the window dimensions. Defaults to 1280x720\n"
     "\t-mat-mode <MODE>       Specify the material mode, default (the default) or "
     "white_diffuse\n"
+    "\t-env <path>            Specify HDR environment map (.exr file)\n"
     "\n";
 
 int win_width = 1280;
@@ -118,6 +119,7 @@ void run_app(const std::vector<std::string> &args,
     ImGuiIO &io = ImGui::GetIO();
 
     std::string scene_file;
+    std::string env_map_file;
     bool got_camera_args = false;
     glm::vec3 eye(0, 0, 5);
     glm::vec3 center(0);
@@ -161,6 +163,9 @@ void run_app(const std::vector<std::string> &args,
             }
         } else if (args[i] == "-benchmark-frames") {
             benchmark_frames = std::stoi(args[++i]);
+        } else if (args[i] == "-env") {
+            env_map_file = args[++i];
+            canonicalize_path(env_map_file);
         } else if (args[i][0] != '-') {
             scene_file = args[i];
             canonicalize_path(scene_file);
@@ -184,7 +189,7 @@ void run_app(const std::vector<std::string> &args,
     std::string scene_info;
     float scene_diagonal = 10.0f;  // Default fallback value
     {
-        Scene scene(scene_file, material_mode);
+        Scene scene(scene_file, material_mode, env_map_file);
         scene.samples_per_pixel = samples_per_pixel;
 
         // Calculate scene-aware movement speed

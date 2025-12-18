@@ -79,6 +79,9 @@ RenderVulkan::~RenderVulkan()
 {
     vkDestroyQueryPool(device->logical_device(), timing_query_pool, nullptr);
     vkDestroySampler(device->logical_device(), sampler, nullptr);
+    if (env_map_sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(device->logical_device(), env_map_sampler, nullptr);
+    }
     vkDestroyCommandPool(device->logical_device(), command_pool, nullptr);
     vkDestroyCommandPool(device->logical_device(), render_cmd_pool, nullptr);
     vkDestroyPipelineLayout(device->logical_device(), pipeline_layout, nullptr);
@@ -925,6 +928,14 @@ void RenderVulkan::set_scene(const Scene &scene)
         );
     }
 
+    // Load environment map if specified, otherwise create dummy
+    if (!scene.environment_map_path.empty()) {
+        load_environment_map(scene.environment_map_path);
+    } else {
+        // Create dummy 1x1 black environment map to keep binding 15 valid
+        create_dummy_environment_map();
+    }
+
     build_raytracing_pipeline();
     build_shader_descriptor_table();
     build_shader_binding_table();
@@ -1066,6 +1077,9 @@ void RenderVulkan::build_raytracing_pipeline()
                 13, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
             .add_binding(
                 14, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            // Environment map at binding 15
+            .add_binding(
+                15, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_MISS_BIT_KHR)
             // Textures at binding 30 (single descriptor set architecture)
             .add_binding(
                 30,
@@ -1280,7 +1294,7 @@ void RenderVulkan::build_shader_descriptor_table()
 #endif
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},  // 2 existing + 5 global buffers
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             std::max(uint32_t(textures.size()), uint32_t(1))}}; // Moved from Set 1
+                             std::max(uint32_t(textures.size()), uint32_t(1)) + 1}};  // +1 for environment map at binding 15
 
     VkDescriptorPoolCreateInfo pool_create_info = {};
     pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1429,6 +1443,25 @@ void RenderVulkan::build_shader_descriptor_table()
         mesh_write.pBufferInfo = &mesh_info;
         
         vkUpdateDescriptorSets(device->logical_device(), 1, &mesh_write, 0, nullptr);
+    }
+
+    // Environment map (binding 15) - always write since we guarantee texture exists
+    if (env_map_texture && env_map_sampler) {
+        VkDescriptorImageInfo env_image_info = {};
+        env_image_info.sampler = env_map_sampler;
+        env_image_info.imageView = env_map_texture->view_handle();
+        env_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        
+        VkWriteDescriptorSet env_write = {};
+        env_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        env_write.dstSet = desc_set;
+        env_write.dstBinding = 15;
+        env_write.dstArrayElement = 0;
+        env_write.descriptorCount = 1;
+        env_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        env_write.pImageInfo = &env_image_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &env_write, 0, nullptr);
     }
 
 #ifdef ENABLE_OIDN
@@ -1757,4 +1790,249 @@ void RenderVulkan::upload_global_buffer(std::shared_ptr<vkrt::Buffer>& gpu_buf,
     vkResetCommandPool(device->logical_device(),
                       command_pool,
                       VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+}
+
+void RenderVulkan::load_environment_map(const std::string& path) {
+    try {
+        // Load from file using util function
+        HDRImage img = ::load_environment_map(path);
+        
+        // Upload to GPU
+        upload_environment_map(img);
+        
+        has_environment = true;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to load environment map: " << e.what() << std::endl;
+        has_environment = false;
+        // Create dummy environment map to keep descriptor valid
+        create_dummy_environment_map();
+    }
+}
+
+void RenderVulkan::upload_environment_map(const HDRImage& img) {
+    // Create GPU texture for environment map (RGBA32F format)
+    env_map_texture = vkrt::Texture2D::device(
+        *device,
+        glm::uvec2(img.width, img.height),
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+    );
+    
+    // Create upload buffer
+    const size_t upload_size = img.width * img.height * 4 * sizeof(float);
+    auto upload_buf = vkrt::Buffer::host(
+        *device,
+        upload_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    // Copy data to upload buffer
+    void* mapped = upload_buf->map();
+    std::memcpy(mapped, img.data, upload_size);
+    upload_buf->unmap();
+    
+    // Record commands to upload texture
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
+    
+    // Transition image to transfer destination layout
+    VkImageMemoryBarrier img_barrier = {};
+    img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    img_barrier.image = env_map_texture->image_handle();
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    img_barrier.srcAccessMask = 0;
+    img_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    img_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    img_barrier.subresourceRange.baseMipLevel = 0;
+    img_barrier.subresourceRange.levelCount = 1;
+    img_barrier.subresourceRange.baseArrayLayer = 0;
+    img_barrier.subresourceRange.layerCount = 1;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &img_barrier);
+    
+    // Copy buffer to image
+    VkBufferImageCopy copy_region = {};
+    copy_region.bufferOffset = 0;
+    copy_region.bufferRowLength = 0;    // Tightly packed
+    copy_region.bufferImageHeight = 0;  // Tightly packed
+    copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy_region.imageSubresource.mipLevel = 0;
+    copy_region.imageSubresource.baseArrayLayer = 0;
+    copy_region.imageSubresource.layerCount = 1;
+    copy_region.imageOffset = {0, 0, 0};
+    copy_region.imageExtent = {static_cast<uint32_t>(img.width), 
+                               static_cast<uint32_t>(img.height), 1};
+    
+    vkCmdCopyBufferToImage(command_buffer,
+                           upload_buf->handle(),
+                           env_map_texture->image_handle(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1,
+                           &copy_region);
+    
+    // Transition to shader read optimal layout
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    img_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    img_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &img_barrier);
+    
+    CHECK_VULKAN(vkEndCommandBuffer(command_buffer));
+    
+    // Submit and wait for completion
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+    CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+    
+    vkResetCommandPool(device->logical_device(),
+                       command_pool,
+                       VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+    
+    // Create sampler for environment map with appropriate settings
+    if (env_map_sampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo sampler_info = {};
+        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = VK_FILTER_LINEAR;
+        sampler_info.minFilter = VK_FILTER_LINEAR;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;   // Wrap horizontally (360°)
+        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;  // Clamp at poles
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.minLod = 0;
+        sampler_info.maxLod = 0;
+        
+        CHECK_VULKAN(vkCreateSampler(device->logical_device(), &sampler_info, 
+                                     nullptr, &env_map_sampler));
+    }
+}
+
+void RenderVulkan::create_dummy_environment_map() {
+    // Create a 1x1 black texture to use when no environment map is loaded
+    // This ensures binding 15 always has a valid descriptor
+    env_map_texture = vkrt::Texture2D::device(
+        *device,
+        glm::uvec2(1, 1),
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+    );
+    
+    // Create upload buffer with black color (all zeros)
+    const size_t upload_size = 1 * 1 * 4 * sizeof(float);
+    auto upload_buf = vkrt::Buffer::host(
+        *device,
+        upload_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    // Zero out the buffer (black)
+    void* mapped = upload_buf->map();
+    std::memset(mapped, 0, upload_size);
+    upload_buf->unmap();
+    
+    // Upload to GPU
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
+    
+    // Transition to transfer destination
+    VkImageMemoryBarrier img_barrier = {};
+    img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    img_barrier.image = env_map_texture->image_handle();
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    img_barrier.srcAccessMask = 0;
+    img_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    img_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    img_barrier.subresourceRange.baseMipLevel = 0;
+    img_barrier.subresourceRange.levelCount = 1;
+    img_barrier.subresourceRange.baseArrayLayer = 0;
+    img_barrier.subresourceRange.layerCount = 1;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &img_barrier);
+    
+    // Copy buffer to image
+    VkBufferImageCopy copy_region = {};
+    copy_region.bufferOffset = 0;
+    copy_region.bufferRowLength = 0;
+    copy_region.bufferImageHeight = 0;
+    copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy_region.imageSubresource.mipLevel = 0;
+    copy_region.imageSubresource.baseArrayLayer = 0;
+    copy_region.imageSubresource.layerCount = 1;
+    copy_region.imageOffset = {0, 0, 0};
+    copy_region.imageExtent = {1, 1, 1};
+    
+    vkCmdCopyBufferToImage(command_buffer,
+                           upload_buf->handle(),
+                           env_map_texture->image_handle(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &copy_region);
+    
+    // Transition to shader read
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    img_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    img_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         0, 0, nullptr, 0, nullptr, 1, &img_barrier);
+    
+    CHECK_VULKAN(vkEndCommandBuffer(command_buffer));
+    
+    // Submit and wait
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+    CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+    
+    vkResetCommandPool(device->logical_device(),
+                       command_pool,
+                       VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+    
+    // Create sampler if not exists
+    if (env_map_sampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo sampler_info = {};
+        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = VK_FILTER_LINEAR;
+        sampler_info.minFilter = VK_FILTER_LINEAR;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.minLod = 0;
+        sampler_info.maxLod = 0;
+        
+        CHECK_VULKAN(vkCreateSampler(device->logical_device(), &sampler_info,
+                                     nullptr, &env_map_sampler));
+    }
+    
+    has_environment = false;
 }
