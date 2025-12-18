@@ -1095,6 +1095,7 @@ void RenderDXR::build_shader_resource_heap()
                            .add_srv_range(1, 15, 0)  // t15 (environment map)
                            .create(device.Get());
 
+    // Sampler heap: s0 (tex_sampler for both material textures and environment map)
     raygen_sampler_heap =
         dxr::DescriptorHeapBuilder().add_sampler_range(1, 0, 0).create(device.Get());
 }

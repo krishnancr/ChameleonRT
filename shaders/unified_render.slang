@@ -215,6 +215,7 @@ void RayGen()
         float3 path_throughput = float3(1.0f, 1.0f, 1.0f);
         float3 sample_illum = float3(0.0f);  // Accumulate illumination for this sample
         DisneyMaterial mat;
+        float prev_bsdf_pdf = 0.0f;  // BRDF PDF from previous bounce (for environment MIS)
     
     do {
         // Setup ray
@@ -244,12 +245,33 @@ void RayGen()
         ++ray_count;
 #endif
         
-        // Miss? Add sky color and terminate
+        // Miss? Handle environment/sky and terminate
         if (payload.color_dist.w <= 0.0f) {
-            sample_illum += path_throughput * payload.color_dist.rgb;  // Sky color from Miss shader
+            // Get environment radiance from miss shader
+            float3 env_radiance = payload.color_dist.rgb;
+            
+            // ===== STEP 2.2: MIS for BRDF samples that hit environment =====
+            // Check if environment map is loaded (width > 1 means real env map, not dummy 1x1)
+            uint env_width, env_height;
+            environment_map.GetDimensions(env_width, env_height);
+            
+            if (bounce > 0 && env_width > 1 && prev_bsdf_pdf > EPSILON) {
+                // This ray was sampled from BRDF, apply MIS weight
+                // Uniform PDF over sphere = 1 / (4π)
+                float env_pdf = M_1_PI * 0.25f;
+                
+                // MIS weight: BRDF PDF vs environment PDF
+                float mis_weight = power_heuristic(1.0f, prev_bsdf_pdf, 1.0f, env_pdf);
+                
+                sample_illum += path_throughput * env_radiance * mis_weight;
+            } else {
+                // Primary ray or no environment map - add full contribution
+                sample_illum += path_throughput * env_radiance;
+            }
+            
             // Capture first-hit data for OIDN (sky color as albedo, no normal for miss)
             if (bounce == 0) {
-                first_albedo += payload.color_dist.rgb;
+                first_albedo += env_radiance;
                 // first_normal stays 0 for sky miss
             }
             break;
@@ -347,7 +369,78 @@ void RayGen()
             if (light_pdf >= EPSILON && bsdf_pdf >= EPSILON && shadow_hit.color_dist.w < 0) {
                 float3 bsdf = disney_brdf(mat, v_z, w_o, light_dir, v_x, v_y);
                 float w = power_heuristic(1.0f, light_pdf, 1.0f, bsdf_pdf);
-                illum = bsdf * light.emission.rgb * abs(dot(light_dir, v_z)) * w / light_pdf;
+                illum += bsdf * light.emission.rgb * abs(dot(light_dir, v_z)) * w / light_pdf;
+            }
+        }
+        
+        // ===== STEP 2.1: Direct lighting from environment map =====
+        // Check if environment map is loaded (width > 1 means real env map, not dummy 1x1)
+        uint env_width, env_height;
+        environment_map.GetDimensions(env_width, env_height);
+        
+        if (env_width > 1) {
+            // Step 1: Generate random UV coordinates (uniform sampling)
+            float env_u = lcg_randomf(rng);
+            float env_v = lcg_randomf(rng);
+            
+            // Step 2: Convert UV to direction (spherical lat-long mapping)
+            float theta = env_v * M_PI;           // v -> [0, π]
+            float phi = env_u * 2.0f * M_PI - M_PI; // u -> [-π, π]
+            
+            float sin_theta = sin(theta);
+            float cos_theta = cos(theta);
+            float sin_phi = sin(phi);
+            float cos_phi = cos(phi);
+            
+            // Direction in world space (Y-up coordinate system)
+            float3 wi_env = float3(sin_theta * sin_phi, cos_theta, -sin_theta * cos_phi);
+            
+            // Step 3: Sample environment map at this UV
+            float3 env_radiance = environment_map.SampleLevel(tex_sampler, float2(env_u, env_v), 0).rgb;
+            
+            // Step 4: Trace shadow ray to check visibility (ray to infinity)
+            RayDesc env_shadow_ray;
+            env_shadow_ray.Origin = hit_p + v_z * EPSILON;  // Offset to avoid self-intersection
+            env_shadow_ray.Direction = wi_env;
+            env_shadow_ray.TMin = 0.0f;
+            env_shadow_ray.TMax = 1e20f;  // Ray to infinity
+            
+            Payload env_shadow_payload;
+            env_shadow_payload.color_dist = float4(0.0f, 0.0f, 0.0f, 1.0f);  // w=1 means hit
+            env_shadow_payload.normal = float4(0.0f, 0.0f, 0.0f, 0.0f);
+            
+            TraceRay(
+                scene,
+                RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                0xFF,
+                0,
+                1,
+                1,  // Shadow miss shader index
+                env_shadow_ray,
+                env_shadow_payload
+            );
+            
+#ifdef REPORT_RAY_STATS
+            ++ray_count;
+#endif
+            
+            // Step 5: If ray missed all geometry (w < 0), it hit the environment
+            if (env_shadow_payload.color_dist.w < 0.0f) {
+                // Calculate BSDF for this direction
+                float3 env_bsdf = disney_brdf(mat, v_z, w_o, wi_env, v_x, v_y);
+                float env_bsdf_pdf = disney_pdf(mat, v_z, w_o, wi_env, v_x, v_y);
+                
+                // Uniform PDF over sphere = 1 / (4π) ≈ 0.0796
+                float env_pdf = M_1_PI * 0.25f;
+                
+                // MIS weight (power heuristic, same as quad lights)
+                if (env_bsdf_pdf >= EPSILON) {
+                    float env_mis_weight = power_heuristic(1.0f, env_pdf, 1.0f, env_bsdf_pdf);
+                    
+                    // Add contribution
+                    float env_cos_term = abs(dot(wi_env, v_z));
+                    illum += env_bsdf * env_radiance * env_cos_term * env_mis_weight / env_pdf;
+                }
             }
         }
         
@@ -412,6 +505,9 @@ void RayGen()
             // Only compute throughput if we're continuing (pdf is guaranteed > 0 here)
             float cos_theta = abs(dot(w_i, v_z));
             path_throughput *= (bsdf * cos_theta) / pdf;
+            
+            // Store BRDF PDF for environment MIS on next bounce miss
+            prev_bsdf_pdf = pdf;
             
             // Update ray for next bounce
             ray_origin = hit_p;
@@ -497,12 +593,11 @@ void Miss(inout Payload payload)
     float u = (1.0f + atan2(dir.x, -dir.z) * M_1_PI) * 0.5f;
     float v = acos(dir.y) * M_1_PI;
     
-    // Check if environment map is available by checking dimensions
-    // Note: Dummy 1x1 texture is used when no env map is loaded, so check width > 1
-    uint width, height;
-    environment_map.GetDimensions(width, height);
+    // Check if environment map is available (width > 1 means real env map, not dummy 1x1)
+    uint env_width, env_height;
+    environment_map.GetDimensions(env_width, env_height);
     
-    if (width > 1) {
+    if (env_width > 1) {
         // Sample environment map
         #ifdef VULKAN
         float4 env_color = environment_map.SampleLevel(float2(u, v), 0);
