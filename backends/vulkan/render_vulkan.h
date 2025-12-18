@@ -4,6 +4,9 @@
 #include <memory>
 #include <unordered_map>
 #include <vulkan/vulkan.h>
+#ifdef ENABLE_OIDN
+#include <OpenImageDenoise/oidn.hpp>
+#endif
 #include "render_backend.h"
 #include "vulkan_utils.h"
 #include "vulkanrt_utils.h"
@@ -35,7 +38,22 @@ struct RenderVulkan : RenderBackend {
     size_t global_uv_count = 0;
     size_t mesh_desc_count = 0;
 
-    std::shared_ptr<vkrt::Texture2D> render_target, accum_buffer;
+    std::shared_ptr<vkrt::Texture2D> render_target;
+    std::shared_ptr<vkrt::Buffer> accum_buffer;
+
+#ifdef ENABLE_OIDN
+    std::shared_ptr<vkrt::Buffer> denoise_buffer;
+    oidn::DeviceRef oidn_device;
+    oidn::FilterRef oidn_filter;
+    
+    // Tonemap compute pipeline
+    VkPipeline tonemap_pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout tonemap_pipeline_layout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout tonemap_desc_layout = VK_NULL_HANDLE;
+    VkDescriptorPool tonemap_desc_pool = VK_NULL_HANDLE;
+    VkDescriptorSet tonemap_desc_set = VK_NULL_HANDLE;
+    VkCommandBuffer tonemap_cmd_buf = VK_NULL_HANDLE;
+#endif
 
 #ifdef REPORT_RAY_STATS
     std::shared_ptr<vkrt::Texture2D> ray_stats;

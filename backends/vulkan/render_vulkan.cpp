@@ -88,6 +88,20 @@ RenderVulkan::~RenderVulkan()
     vkDestroyDescriptorPool(device->logical_device(), desc_pool, nullptr);
     vkDestroyFence(device->logical_device(), fence, nullptr);
     vkDestroyPipeline(device->logical_device(), rt_pipeline.handle(), nullptr);
+#ifdef ENABLE_OIDN
+    if (tonemap_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device->logical_device(), tonemap_pipeline, nullptr);
+    }
+    if (tonemap_pipeline_layout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(device->logical_device(), tonemap_pipeline_layout, nullptr);
+    }
+    if (tonemap_desc_layout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device->logical_device(), tonemap_desc_layout, nullptr);
+    }
+    if (tonemap_desc_pool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device->logical_device(), tonemap_desc_pool, nullptr);
+    }
+#endif
 }
 
 std::string RenderVulkan::name()
@@ -97,6 +111,52 @@ std::string RenderVulkan::name()
 
 void RenderVulkan::initialize(const int fb_width, const int fb_height)
 {
+#ifdef ENABLE_OIDN
+    // Query the UUID of the Vulkan physical device
+    VkPhysicalDeviceIDProperties id_properties{};
+    id_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &id_properties;
+    vkGetPhysicalDeviceProperties2(device->physical_device(), &properties);
+
+    oidn::UUID uuid;
+    std::memcpy(uuid.bytes, id_properties.deviceUUID, sizeof(uuid.bytes));
+
+    // Initialize the denoiser device
+    oidn_device = oidn::newDevice(uuid);
+    if (oidn_device.getError() != oidn::Error::None)
+        throw std::runtime_error("Failed to create OIDN device.");
+    oidn_device.commit();
+    if (oidn_device.getError() != oidn::Error::None)
+        throw std::runtime_error("Failed to commit OIDN device.");
+
+    // Find a compatible external memory handle type
+    const auto oidn_external_mem_types = oidn_device.get<oidn::ExternalMemoryTypeFlags>("externalMemoryTypes");
+    oidn::ExternalMemoryTypeFlag oidn_external_mem_type;
+    VkExternalMemoryHandleTypeFlagBits external_mem_type;
+
+#ifdef _WIN32
+    if (oidn_external_mem_types & oidn::ExternalMemoryTypeFlag::OpaqueWin32) {
+        oidn_external_mem_type = oidn::ExternalMemoryTypeFlag::OpaqueWin32;
+        external_mem_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    } else {
+        throw std::runtime_error("Failed to find compatible external memory type");
+    }
+#else
+    if (oidn_external_mem_types & oidn::ExternalMemoryTypeFlag::OpaqueFD) {
+        oidn_external_mem_type = oidn::ExternalMemoryTypeFlag::OpaqueFD;
+        external_mem_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    } else if (oidn_external_mem_types & oidn::ExternalMemoryTypeFlag::DMABuf) {
+        oidn_external_mem_type = oidn::ExternalMemoryTypeFlag::DMABuf;
+        external_mem_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    } else {
+        throw std::runtime_error("Failed to find compatible external memory type");
+    }
+#endif
+#endif
+
     frame_id = 0;
     img.resize(fb_width * fb_height);
 
@@ -106,10 +166,25 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
                                 VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 
-    accum_buffer = vkrt::Texture2D::device(*device,
-                                           glm::uvec2(fb_width, fb_height),
-                                           VK_FORMAT_R32G32B32A32_SFLOAT,
-                                           VK_IMAGE_USAGE_STORAGE_BIT);
+#ifdef ENABLE_OIDN
+    // Allocate 3x size for AccumPixel struct with external memory for OIDN sharing
+    accum_buffer = vkrt::Buffer::device(*device,
+                                        3 * sizeof(glm::vec4) * fb_width * fb_height,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        (VkMemoryPropertyFlagBits)0,
+                                        external_mem_type);
+
+    denoise_buffer = vkrt::Buffer::device(*device,
+                                          sizeof(glm::vec4) * fb_width * fb_height,
+                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                          (VkMemoryPropertyFlagBits)0,
+                                          external_mem_type);
+#else
+    // Allocate 3x size for AccumPixel struct: color + albedo + normal
+    accum_buffer = vkrt::Buffer::device(*device,
+                                        3 * sizeof(glm::vec4) * fb_width * fb_height,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+#endif
 
     img_readback_buf = vkrt::Buffer::host(
         *device, img.size() * render_target->pixel_size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
@@ -133,9 +208,9 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
         CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
 
 #ifndef REPORT_RAY_STATS
-        std::array<VkImageMemoryBarrier, 2> barriers = {};
+        std::array<VkImageMemoryBarrier, 1> barriers = {};
 #else
-        std::array<VkImageMemoryBarrier, 3> barriers = {};
+        std::array<VkImageMemoryBarrier, 2> barriers = {};
 #endif
         for (auto &b : barriers) {
             b = VkImageMemoryBarrier{};
@@ -149,9 +224,8 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
             b.subresourceRange.layerCount = 1;
         }
         barriers[0].image = render_target->image_handle();
-        barriers[1].image = accum_buffer->image_handle();
 #ifdef REPORT_RAY_STATS
-        barriers[2].image = ray_stats->image_handle();
+        barriers[1].image = ray_stats->image_handle();
 #endif
 
         vkCmdPipelineBarrier(command_buffer,
@@ -187,7 +261,7 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
     if (desc_set != VK_NULL_HANDLE) {
         vkrt::DescriptorSetUpdater()
             .write_storage_image(desc_set, 1, render_target)
-            .write_storage_image(desc_set, 2, accum_buffer)
+            .write_ssbo(desc_set, 2, accum_buffer)
 #ifdef REPORT_RAY_STATS
             .write_storage_image(desc_set, 6, ray_stats)
 #endif
@@ -195,6 +269,49 @@ void RenderVulkan::initialize(const int fb_width, const int fb_height)
 
         record_command_buffers();
     }
+
+#ifdef ENABLE_OIDN
+    {
+        // Initialize the denoiser filter
+        oidn_filter = oidn_device.newFilter("RT");
+        if (oidn_device.getError() != oidn::Error::None)
+            throw std::runtime_error("Failed to create OIDN filter.");
+
+        auto input_buffer = oidn_device.newBuffer(oidn_external_mem_type,
+                                                  accum_buffer->external_mem_handle(external_mem_type),
+#ifdef _WIN32
+                                                  nullptr,
+#endif
+                                                  accum_buffer->size());
+
+        auto output_buffer = oidn_device.newBuffer(oidn_external_mem_type,
+                                                   denoise_buffer->external_mem_handle(external_mem_type),
+#ifdef _WIN32
+                                                   nullptr,
+#endif
+                                                   denoise_buffer->size());
+
+        // Configure filter inputs from AccumPixel struct layout:
+        // struct AccumPixel { float4 color; float4 albedo; float4 normal; }
+        // Stride between pixels = 3 * sizeof(glm::vec4) = 48 bytes
+        oidn_filter.setImage("color",  input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             0 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+        oidn_filter.setImage("albedo", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             1 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+        oidn_filter.setImage("normal", input_buffer,  oidn::Format::Float3, fb_width, fb_height,
+                             2 * sizeof(glm::vec4), 3 * sizeof(glm::vec4));
+
+        oidn_filter.setImage("output", output_buffer, oidn::Format::Float3, fb_width, fb_height,
+                             0, sizeof(glm::vec4));
+
+        oidn_filter.set("hdr", true);
+        oidn_filter.set("quality", oidn::Quality::High);
+
+        oidn_filter.commit();
+        if (oidn_device.getError() != oidn::Error::None)
+            throw std::runtime_error("Failed to commit OIDN filter.");
+    }
+#endif
 }
 
 void RenderVulkan::set_scene(const Scene &scene)
@@ -838,6 +955,28 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
     submit_info.pCommandBuffers = &render_cmd_buf;
     CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence));
 
+    // Wait for the ray tracing to complete (critical for OIDN to read the buffer)
+    CHECK_VULKAN(vkWaitForFences(
+        device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
+
+#ifdef ENABLE_OIDN
+    // Execute OIDN denoising on the accumulated buffer
+    oidn_filter.execute();
+    
+    // Check for OIDN errors
+    const char* errorMessage = nullptr;
+    if (oidn_device.getError(errorMessage) != oidn::Error::None) {
+        std::cerr << "OIDN error: " << errorMessage << std::endl;
+    }
+    
+    // Execute tonemap compute pass to convert denoised buffer to display format
+    CHECK_VULKAN(vkResetFences(device->logical_device(), 1, &fence));
+    submit_info.pCommandBuffers = &tonemap_cmd_buf;
+    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, fence));
+    CHECK_VULKAN(vkWaitForFences(
+        device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
+#endif
+
 #ifdef REPORT_RAY_STATS
     const bool need_readback = true;
 #else
@@ -849,11 +988,6 @@ RenderStats RenderVulkan::render(const glm::vec3 &pos,
         submit_info.pCommandBuffers = &readback_cmd_buf;
         CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
     }
-
-    // Wait for just the rendering commands to complete and read back the ray tracing
-    // timestamps we recorded
-    CHECK_VULKAN(vkWaitForFences(
-        device->logical_device(), 1, &fence, true, std::numeric_limits<uint64_t>::max()));
 
     std::array<uint64_t, 2> render_timestamps;
     CHECK_VULKAN(vkGetQueryPoolResults(device->logical_device(),
@@ -905,7 +1039,7 @@ void RenderVulkan::build_raytracing_pipeline()
             .add_binding(
                 1, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
-                2, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+                2, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
                 3, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
             .add_binding(
@@ -1037,6 +1171,100 @@ void RenderVulkan::build_raytracing_pipeline()
                       .set_recursion_depth(1)
                       .set_layout(pipeline_layout)
                       .build(*device);
+
+#ifdef ENABLE_OIDN
+    // Build tonemap compute pipeline using Slang compiler
+    {
+        // Load tonemap shader source
+        auto tonemap_source = chameleonrt::SlangShaderCompiler::loadShaderSource("shaders/tonemap.slang");
+        if (!tonemap_source) {
+            throw std::runtime_error("Failed to load shaders/tonemap.slang");
+        }
+        
+        std::vector<std::string> tonemap_defines;
+        tonemap_defines.push_back("ENABLE_OIDN");
+        
+        auto tonemap_blob = slangCompiler.compileSlangToComputeSPIRV(
+            *tonemap_source,
+            "main",
+            {"shaders"},
+            tonemap_defines);
+        
+        if (!tonemap_blob) {
+            throw std::runtime_error("Tonemap shader compilation failed: " + slangCompiler.getLastError());
+        }
+        
+        // Create tonemap descriptor set layout
+        tonemap_desc_layout =
+            vkrt::DescriptorSetLayoutBuilder()
+                .add_binding(1, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)  // framebuffer
+                .add_binding(8, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT) // denoise_buffer
+                .build(*device);
+        
+        // Create tonemap pipeline layout
+        VkPipelineLayoutCreateInfo tonemap_layout_info = {};
+        tonemap_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        tonemap_layout_info.setLayoutCount = 1;
+        tonemap_layout_info.pSetLayouts = &tonemap_desc_layout;
+        CHECK_VULKAN(vkCreatePipelineLayout(
+            device->logical_device(), &tonemap_layout_info, nullptr, &tonemap_pipeline_layout));
+        
+        // Create shader module from compiled SPIRV
+        const uint32_t* spirv_code = reinterpret_cast<const uint32_t*>(tonemap_blob->bytecode.data());
+        VkShaderModuleCreateInfo module_info = {};
+        module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        module_info.codeSize = tonemap_blob->bytecode.size();
+        module_info.pCode = spirv_code;
+        
+        VkShaderModule tonemap_shader;
+        CHECK_VULKAN(vkCreateShaderModule(device->logical_device(), &module_info, nullptr, &tonemap_shader));
+        
+        // Create compute pipeline
+        VkComputePipelineCreateInfo compute_info = {};
+        compute_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        compute_info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        compute_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        compute_info.stage.module = tonemap_shader;
+        compute_info.stage.pName = "main";
+        compute_info.layout = tonemap_pipeline_layout;
+        
+        CHECK_VULKAN(vkCreateComputePipelines(
+            device->logical_device(), VK_NULL_HANDLE, 1, &compute_info, nullptr, &tonemap_pipeline));
+        
+        // Clean up shader module (pipeline has its own reference)
+        vkDestroyShaderModule(device->logical_device(), tonemap_shader, nullptr);
+        
+        // Create descriptor pool for tonemap
+        std::vector<VkDescriptorPoolSize> tonemap_pool_sizes = {
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}
+        };
+        
+        VkDescriptorPoolCreateInfo tonemap_pool_info = {};
+        tonemap_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        tonemap_pool_info.maxSets = 1;
+        tonemap_pool_info.poolSizeCount = tonemap_pool_sizes.size();
+        tonemap_pool_info.pPoolSizes = tonemap_pool_sizes.data();
+        CHECK_VULKAN(vkCreateDescriptorPool(
+            device->logical_device(), &tonemap_pool_info, nullptr, &tonemap_desc_pool));
+        
+        // Allocate tonemap descriptor set
+        VkDescriptorSetAllocateInfo tonemap_alloc_info = {};
+        tonemap_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        tonemap_alloc_info.descriptorPool = tonemap_desc_pool;
+        tonemap_alloc_info.descriptorSetCount = 1;
+        tonemap_alloc_info.pSetLayouts = &tonemap_desc_layout;
+        CHECK_VULKAN(vkAllocateDescriptorSets(device->logical_device(), &tonemap_alloc_info, &tonemap_desc_set));
+        
+        // Allocate tonemap command buffer
+        VkCommandBufferAllocateInfo cmd_alloc_info = {};
+        cmd_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmd_alloc_info.commandPool = render_cmd_pool;
+        cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmd_alloc_info.commandBufferCount = 1;
+        CHECK_VULKAN(vkAllocateCommandBuffers(device->logical_device(), &cmd_alloc_info, &tonemap_cmd_buf));
+    }
+#endif
 }
 
 void RenderVulkan::build_shader_descriptor_table()
@@ -1087,7 +1315,7 @@ void RenderVulkan::build_shader_descriptor_table()
     auto updater = vkrt::DescriptorSetUpdater()
                        .write_acceleration_structure(desc_set, 0, scene_bvh)
                        .write_storage_image(desc_set, 1, render_target)
-                       .write_storage_image(desc_set, 2, accum_buffer)
+                       .write_ssbo(desc_set, 2, accum_buffer)
                        .write_ubo(desc_set, 3, view_param_buf)
                        .write_ssbo(desc_set, 4, mat_params)
                        .write_ssbo(desc_set, 5, light_params);
@@ -1202,6 +1430,14 @@ void RenderVulkan::build_shader_descriptor_table()
         
         vkUpdateDescriptorSets(device->logical_device(), 1, &mesh_write, 0, nullptr);
     }
+
+#ifdef ENABLE_OIDN
+    // Update tonemap descriptor set
+    vkrt::DescriptorSetUpdater()
+        .write_storage_image(tonemap_desc_set, 1, render_target)
+        .write_ssbo(tonemap_desc_set, 8, denoise_buffer)
+        .update(*device);
+#endif
 }
 
 void RenderVulkan::build_shader_binding_table()
@@ -1414,6 +1650,42 @@ void RenderVulkan::record_command_buffers()
 #endif
 
     CHECK_VULKAN(vkEndCommandBuffer(readback_cmd_buf));
+
+#ifdef ENABLE_OIDN
+    // Record tonemap compute pass command buffer
+    CHECK_VULKAN(vkBeginCommandBuffer(tonemap_cmd_buf, &begin_info));
+    
+    vkCmdBindPipeline(tonemap_cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, tonemap_pipeline);
+    vkCmdBindDescriptorSets(tonemap_cmd_buf,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            tonemap_pipeline_layout,
+                            0,
+                            1,
+                            &tonemap_desc_set,
+                            0,
+                            nullptr);
+    
+    // Dispatch compute shader (16x16 workgroups to match tonemap.slang numthreads)
+    uint32_t dispatch_x = (render_target->dims().x + 15) / 16;
+    uint32_t dispatch_y = (render_target->dims().y + 15) / 16;
+    vkCmdDispatch(tonemap_cmd_buf, dispatch_x, dispatch_y, 1);
+    
+    // Barrier for compute to complete before readback
+    VkMemoryBarrier memory_barrier = {};
+    memory_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    memory_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memory_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    
+    vkCmdPipelineBarrier(tonemap_cmd_buf,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0,
+                         1, &memory_barrier,
+                         0, nullptr,
+                         0, nullptr);
+    
+    CHECK_VULKAN(vkEndCommandBuffer(tonemap_cmd_buf));
+#endif
 }
 
 // Upload global buffer data to GPU via staging buffer

@@ -166,7 +166,8 @@ Buffer Buffer::create(ID3D12Device *device,
                       size_t nbytes,
                       D3D12_RESOURCE_STATES state,
                       D3D12_HEAP_PROPERTIES props,
-                      D3D12_RESOURCE_DESC desc)
+                      D3D12_RESOURCE_DESC desc,
+                      D3D12_HEAP_FLAGS heap_flags)
 {
     if (nbytes == 0) {
         throw std::runtime_error("Error: Cannot create a buffer of size 0");
@@ -176,7 +177,7 @@ Buffer Buffer::create(ID3D12Device *device,
     b.rheap = props.Type;
     b.rstate = state;
     CHECK_ERR(device->CreateCommittedResource(
-        &props, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS(&b.res)));
+        &props, heap_flags, &desc, state, nullptr, IID_PPV_ARGS(&b.res)));
     return b;
 }
 
@@ -190,9 +191,10 @@ Buffer Buffer::upload(ID3D12Device *device,
 Buffer Buffer::device(ID3D12Device *device,
                       size_t nbytes,
                       D3D12_RESOURCE_STATES state,
-                      D3D12_RESOURCE_FLAGS flags)
+                      D3D12_RESOURCE_FLAGS flags,
+                      D3D12_HEAP_FLAGS heap_flags)
 {
-    return create(device, nbytes, state, DEFAULT_HEAP_PROPS, res_desc(nbytes, flags));
+    return create(device, nbytes, state, DEFAULT_HEAP_PROPS, res_desc(nbytes, flags), heap_flags);
 }
 Buffer Buffer::readback(ID3D12Device *device,
                         size_t nbytes,

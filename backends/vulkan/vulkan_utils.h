@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 #include <vulkan/vulkan.h>
+#ifdef _WIN32
+#include <Windows.h>
+#include <vulkan/vulkan_win32.h>
+#endif
 #include <glm/glm.hpp>
 
 #define CHECK_VULKAN(FN)                                   \
@@ -31,6 +35,14 @@ extern PFN_vkCreateRayTracingPipelinesKHR CreateRayTracingPipelinesKHR;
 extern PFN_vkGetAccelerationStructureDeviceAddressKHR GetAccelerationStructureDeviceAddressKHR;
 extern PFN_vkGetAccelerationStructureBuildSizesKHR GetAccelerationStructureBuildSizesKHR;
 
+#ifdef ENABLE_OIDN
+#ifdef _WIN32
+extern PFN_vkGetMemoryWin32HandleKHR GetMemoryWin32HandleKHR;
+#else
+extern PFN_vkGetMemoryFdKHR GetMemoryFdKHR;
+#endif
+#endif
+
 class Device {
     VkInstance vk_instance = VK_NULL_HANDLE;
     VkPhysicalDevice vk_physical_device = VK_NULL_HANDLE;
@@ -43,6 +55,10 @@ class Device {
     VkPhysicalDeviceMemoryProperties mem_props = {};
     VkPhysicalDeviceAccelerationStructurePropertiesKHR as_props = {};
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rt_pipeline_props = {};
+#ifdef ENABLE_OIDN
+    bool vk_external_mem_fd = false;
+    bool vk_external_mem_dma_buf = false;
+#endif
 
 public:
     Device(const std::vector<std::string> &instance_extensions = std::vector<std::string>{},
@@ -69,7 +85,8 @@ public:
         VkCommandPoolCreateFlagBits flags = (VkCommandPoolCreateFlagBits)0);
 
     uint32_t memory_type_index(uint32_t type_filter, VkMemoryPropertyFlags props) const;
-    VkDeviceMemory alloc(size_t nbytes, uint32_t type_filter, VkMemoryPropertyFlags props);
+    VkDeviceMemory alloc(size_t nbytes, uint32_t type_filter, VkMemoryPropertyFlags props,
+                         VkExternalMemoryHandleTypeFlags external_mem_types = 0);
 
     // Return the ticks/s measured by timestamps in the queue
     double get_timestamp_frequency() const;
@@ -100,7 +117,8 @@ class Buffer {
     static std::shared_ptr<Buffer> make_buffer(Device &device,
                                                size_t nbytes,
                                                VkBufferUsageFlags usage,
-                                               VkMemoryPropertyFlags mem_props);
+                                               VkMemoryPropertyFlags mem_props,
+                                               VkExternalMemoryHandleTypeFlags external_mem_types = 0);
 
 public:
     Buffer() = default;
@@ -120,7 +138,8 @@ public:
         Device &device,
         size_t nbytes,
         VkBufferUsageFlags usage,
-        VkMemoryPropertyFlagBits extra_mem_props = (VkMemoryPropertyFlagBits)0);
+        VkMemoryPropertyFlagBits extra_mem_props = (VkMemoryPropertyFlagBits)0,
+        VkExternalMemoryHandleTypeFlags external_mem_types = 0);
 
     // Map the entire range of the buffer
     void *map();
@@ -134,6 +153,14 @@ public:
     VkBuffer handle() const;
 
     VkDeviceAddress device_address() const;
+
+#ifdef ENABLE_OIDN
+#ifdef _WIN32
+    HANDLE external_mem_handle(VkExternalMemoryHandleTypeFlagBits handle_type);
+#else
+    int external_mem_handle(VkExternalMemoryHandleTypeFlagBits handle_type);
+#endif
+#endif
 };
 
 class Texture2D {

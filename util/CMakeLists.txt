@@ -51,3 +51,15 @@ if (CHAMELEONRT_PBRT_SUPPORT)
     target_compile_definitions(util PUBLIC PBRT_PARSER_ENABLED)
 endif()
 
+# Intel Open Image Denoise (OIDN) support
+option(ENABLE_OIDN "Build with Intel Open Image Denoise support." OFF)
+if(ENABLE_OIDN)
+    # Include our OIDN download/setup module
+    include(${CMAKE_SOURCE_DIR}/cmake/oidn.cmake)
+    
+    # Link OIDN to util library
+    target_compile_definitions(util PUBLIC ENABLE_OIDN)
+    target_link_libraries(util PUBLIC OpenImageDenoise)
+    
+    message(STATUS "OIDN: Enabled - will download OIDN ${OIDN_VERSION}")
+endif()

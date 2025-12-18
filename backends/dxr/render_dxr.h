@@ -7,6 +7,10 @@
 #include "dxr_utils.h"
 #include "render_backend.h"
 
+#ifdef ENABLE_OIDN
+#include <OpenImageDenoise/oidn.hpp>
+#endif
+
 #ifdef USE_SLANG_COMPILER
 #include "slang_shader_compiler.h"
 #endif
@@ -40,8 +44,15 @@ struct RenderDXR : RenderBackend {
     size_t mesh_desc_count = 0;
     size_t instance_count = 0;
 
-    dxr::Texture2D render_target, accum_buffer, ray_stats;
+    dxr::Texture2D render_target, ray_stats;
+    dxr::Buffer accum_buffer;
     std::vector<dxr::Texture2D> textures;
+
+#ifdef ENABLE_OIDN
+    dxr::Buffer denoise_buffer;
+    oidn::DeviceRef oidn_device;
+    oidn::FilterRef oidn_filter;
+#endif
 
     std::vector<dxr::BottomLevelBVH> meshes;
     dxr::TopLevelBVH scene_bvh;
@@ -50,6 +61,11 @@ struct RenderDXR : RenderBackend {
 
     dxr::RTPipeline rt_pipeline;
     dxr::DescriptorHeap raygen_desc_heap, raygen_sampler_heap;
+
+    // Tonemap compute shader pipeline
+    dxr::RootSignature tonemap_root_sig;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> tonemap_ps;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> tonemap_cmd_list;
 
     uint64_t fence_value = 1;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;

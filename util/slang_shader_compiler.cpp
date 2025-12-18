@@ -347,6 +347,260 @@ std::optional<std::vector<ShaderBlob>> SlangShaderCompiler::compileSlangToSPIRVL
     return entryPointBlobs;
 }
 
+std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToComputeDXIL(
+    const std::string& source,
+    const std::string& entryPoint,
+    const std::vector<std::string>& searchPaths,
+    const std::vector<std::string>& defines
+) {
+    if (!globalSession) {
+        lastError = "Global session not initialized";
+        return std::nullopt;
+    }
+    
+    // Setup DXIL target with compute shader profile (sm_6_0)
+    slang::SessionDesc sessionDesc = {};
+    slang::TargetDesc targetDesc = {};
+    targetDesc.format = SLANG_DXIL;
+    targetDesc.profile = globalSession->findProfile("sm_6_0");  // Compute shader profile
+    
+    sessionDesc.targets = &targetDesc;
+    sessionDesc.targetCount = 1;
+    
+    // Add search paths
+    std::vector<const char*> searchPathPtrs;
+    if (!searchPaths.empty()) {
+        searchPathPtrs.reserve(searchPaths.size());
+        for (const auto& path : searchPaths) {
+            searchPathPtrs.push_back(path.c_str());
+        }
+        sessionDesc.searchPaths = searchPathPtrs.data();
+        sessionDesc.searchPathCount = (SlangInt)searchPathPtrs.size();
+    }
+    
+    // Create compilation session
+    Slang::ComPtr<slang::ISession> session;
+    SlangResult sessionResult = globalSession->createSession(sessionDesc, session.writeRef());
+    if (SLANG_FAILED(sessionResult)) {
+        lastError = "Failed to create Slang session for compute shader";
+        return std::nullopt;
+    }
+    
+    // Prepend defines to source
+    std::string sourceWithDefines = "";
+    for (const auto& define : defines) {
+        sourceWithDefines += "#define " + define + "\n";
+    }
+    sourceWithDefines += source;
+    
+    // Load module from source
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    Slang::ComPtr<slang::IModule> module;
+    
+    module = session->loadModuleFromSourceString(
+        "shader",
+        "shader.slang",
+        sourceWithDefines.c_str(),
+        diagnostics.writeRef()
+    );
+    
+    if (!module) {
+        lastError = "Module compilation failed";
+        if (diagnostics) {
+            lastError += "\nDiagnostics:\n";
+            lastError += (const char*)diagnostics->getBufferPointer();
+        }
+        return std::nullopt;
+    }
+    
+    // Find the entry point
+    Slang::ComPtr<slang::IEntryPoint> entryPointObj;
+    SlangResult findResult = module->findEntryPointByName(entryPoint.c_str(), entryPointObj.writeRef());
+    
+    if (SLANG_FAILED(findResult)) {
+        lastError = "Entry point '" + entryPoint + "' not found in compute shader";
+        return std::nullopt;
+    }
+    
+    // Create composite program with module + entry point
+    std::vector<slang::IComponentType*> componentTypes;
+    componentTypes.push_back(module.get());
+    componentTypes.push_back(entryPointObj.get());
+    
+    Slang::ComPtr<slang::IComponentType> linkedProgram;
+    SlangResult linkResult = session->createCompositeComponentType(
+        componentTypes.data(),
+        (SlangInt)componentTypes.size(),
+        linkedProgram.writeRef(),
+        diagnostics.writeRef()
+    );
+    
+    if (SLANG_FAILED(linkResult)) {
+        lastError = "Failed to link compute shader program";
+        if (diagnostics) {
+            lastError += "\nDiagnostics:\n";
+            lastError += (const char*)diagnostics->getBufferPointer();
+        }
+        return std::nullopt;
+    }
+    
+    // Generate target code (DXIL bytecode)
+    Slang::ComPtr<slang::IBlob> targetCode;
+    SlangResult getCodeResult = linkedProgram->getTargetCode(
+        0,
+        targetCode.writeRef(),
+        diagnostics.writeRef()
+    );
+    
+    if (SLANG_FAILED(getCodeResult)) {
+        lastError = "Failed to generate DXIL bytecode for compute shader";
+        if (diagnostics) {
+            lastError += "\nDiagnostics:\n";
+            lastError += (const char*)diagnostics->getBufferPointer();
+        }
+        return std::nullopt;
+    }
+    
+    // Create shader blob
+    ShaderBlob shaderBlob;
+    shaderBlob.target = ShaderTarget::DXIL;
+    shaderBlob.entryPoint = entryPoint;
+    shaderBlob.stage = ShaderStage::Compute;
+    
+    const uint8_t* codeData = (const uint8_t*)targetCode->getBufferPointer();
+    size_t codeSize = targetCode->getBufferSize();
+    shaderBlob.bytecode.assign(codeData, codeData + codeSize);
+    
+    return shaderBlob;
+}
+
+std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToComputeSPIRV(
+    const std::string& source,
+    const std::string& entryPoint,
+    const std::vector<std::string>& searchPaths,
+    const std::vector<std::string>& defines
+) {
+    if (!globalSession) {
+        lastError = "Global session not initialized";
+        return std::nullopt;
+    }
+    
+    // Setup SPIRV target with compute shader profile (glsl_450 for Vulkan compute)
+    slang::SessionDesc sessionDesc = {};
+    slang::TargetDesc targetDesc = {};
+    targetDesc.format = SLANG_SPIRV;
+    targetDesc.profile = globalSession->findProfile("glsl_450");  // Vulkan compute shader profile
+    
+    sessionDesc.targets = &targetDesc;
+    sessionDesc.targetCount = 1;
+    
+    // Add search paths
+    std::vector<const char*> searchPathPtrs;
+    if (!searchPaths.empty()) {
+        searchPathPtrs.reserve(searchPaths.size());
+        for (const auto& path : searchPaths) {
+            searchPathPtrs.push_back(path.c_str());
+        }
+        sessionDesc.searchPaths = searchPathPtrs.data();
+        sessionDesc.searchPathCount = (SlangInt)searchPathPtrs.size();
+    }
+    
+    // Create compilation session
+    Slang::ComPtr<slang::ISession> session;
+    SlangResult sessionResult = globalSession->createSession(sessionDesc, session.writeRef());
+    if (SLANG_FAILED(sessionResult)) {
+        lastError = "Failed to create Slang session for SPIRV compute shader";
+        return std::nullopt;
+    }
+    
+    // Prepend defines to source (add VULKAN define for Vulkan bindings)
+    std::string sourceWithDefines = "#define VULKAN\n";
+    for (const auto& define : defines) {
+        sourceWithDefines += "#define " + define + "\n";
+    }
+    sourceWithDefines += source;
+    
+    // Load module from source
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    Slang::ComPtr<slang::IModule> module;
+    
+    module = session->loadModuleFromSourceString(
+        "shader",
+        "shader.slang",
+        sourceWithDefines.c_str(),
+        diagnostics.writeRef()
+    );
+    
+    if (!module) {
+        lastError = "Module compilation failed for SPIRV compute";
+        if (diagnostics) {
+            lastError += "\nDiagnostics:\n";
+            lastError += (const char*)diagnostics->getBufferPointer();
+        }
+        return std::nullopt;
+    }
+    
+    // Find the entry point
+    Slang::ComPtr<slang::IEntryPoint> entryPointObj;
+    SlangResult findResult = module->findEntryPointByName(entryPoint.c_str(), entryPointObj.writeRef());
+    
+    if (SLANG_FAILED(findResult)) {
+        lastError = "Entry point '" + entryPoint + "' not found in SPIRV compute shader";
+        return std::nullopt;
+    }
+    
+    // Create composite program with module + entry point
+    std::vector<slang::IComponentType*> componentTypes;
+    componentTypes.push_back(module.get());
+    componentTypes.push_back(entryPointObj.get());
+    
+    Slang::ComPtr<slang::IComponentType> linkedProgram;
+    SlangResult linkResult = session->createCompositeComponentType(
+        componentTypes.data(),
+        (SlangInt)componentTypes.size(),
+        linkedProgram.writeRef(),
+        diagnostics.writeRef()
+    );
+    
+    if (SLANG_FAILED(linkResult)) {
+        lastError = "Failed to link SPIRV compute shader program";
+        if (diagnostics) {
+            lastError += "\nDiagnostics:\n";
+            lastError += (const char*)diagnostics->getBufferPointer();
+        }
+        return std::nullopt;
+    }
+    
+    // Generate target code (SPIRV bytecode)
+    Slang::ComPtr<slang::IBlob> targetCode;
+    SlangResult getCodeResult = linkedProgram->getTargetCode(
+        0,
+        targetCode.writeRef(),
+        diagnostics.writeRef()
+    );
+    
+    if (SLANG_FAILED(getCodeResult)) {
+        lastError = "Failed to generate SPIRV bytecode for compute shader";
+        if (diagnostics) {
+            lastError += "\nDiagnostics:\n";
+            lastError += (const char*)diagnostics->getBufferPointer();
+        }
+        return std::nullopt;
+    }
+    
+    // Create shader blob
+    ShaderBlob shaderBlob;
+    shaderBlob.target = ShaderTarget::SPIRV;
+    shaderBlob.entryPoint = entryPoint;
+    shaderBlob.stage = ShaderStage::Compute;
+    
+    const uint8_t* codeData = (const uint8_t*)targetCode->getBufferPointer();
+    size_t codeSize = targetCode->getBufferSize();
+    shaderBlob.bytecode.assign(codeData, codeData + codeSize);
+    
+    return shaderBlob;
+}
+
 std::optional<ShaderBlob> SlangShaderCompiler::compileSlangToMetal(
     const std::string& source,
     const std::string& entryPoint,
