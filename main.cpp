@@ -182,9 +182,14 @@ void run_app(const std::vector<std::string> &args,
     renderer->initialize(win_width, win_height);
 
     std::string scene_info;
+    float scene_diagonal = 10.0f;  // Default fallback value
     {
         Scene scene(scene_file, material_mode);
         scene.samples_per_pixel = samples_per_pixel;
+
+        // Calculate scene-aware movement speed
+        auto scene_bounds = scene.compute_bounds();
+        scene_diagonal = scene_bounds.diagonal();
 
         std::stringstream ss;
         ss << "Scene '" << scene_file << "':\n"
@@ -214,6 +219,7 @@ void run_app(const std::vector<std::string> &args,
     }
 
     ArcballCamera camera(eye, center, up);
+    camera.set_scene_bounds(scene_diagonal);
 
     const std::string rt_backend = renderer->name();
     const std::string cpu_brand = get_cpu_brand();
@@ -246,8 +252,20 @@ void run_app(const std::vector<std::string> &args,
                               << " -center " << center.x << " " << center.y << " " << center.z
                               << " -up " << up.x << " " << up.y << " " << up.z << " -fov "
                               << fov_y << "\n";
-                } else if (event.key.keysym.sym == SDLK_s) {
+                } else if (event.key.keysym.sym == SDLK_i) {
                     save_image = true;
+                } else if (event.key.keysym.sym == SDLK_s) {
+                    camera.move(glm::vec3(0, 0, -1.0f));
+                    camera_changed = true;
+                } else if (event.key.keysym.sym == SDLK_w) {
+                    camera.move(glm::vec3(0, 0, 1.0f));
+                    camera_changed = true;
+                } else if (event.key.keysym.sym == SDLK_d) {
+                    camera.move(glm::vec3(-1.0f, 0, 0));
+                    camera_changed = true;
+                } else if (event.key.keysym.sym == SDLK_a) {
+                    camera.move(glm::vec3(1.0f, 0, 0));
+                    camera_changed = true;
                 }
             }
             if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE &&
@@ -269,7 +287,7 @@ void run_app(const std::vector<std::string> &args,
                     }
                     prev_mouse = cur_mouse;
                 } else if (event.type == SDL_MOUSEWHEEL) {
-                    camera.zoom(event.wheel.y * 0.1);
+                    camera.zoom(event.wheel.y * camera.get_movement_speed());
                     camera_changed = true;
                 }
             }

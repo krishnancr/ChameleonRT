@@ -41,8 +41,32 @@ struct Scene {
     std::vector<GeometryInstanceData> geometry_instances; // Metadata per instance
     std::vector<glm::mat4> transform_matrices;    // Transform per instance
     
+    // Scene bounds for adaptive camera movement
+    struct Bounds {
+        glm::vec3 min = glm::vec3(std::numeric_limits<float>::max());
+        glm::vec3 max = glm::vec3(std::numeric_limits<float>::lowest());
+        
+        void expand(const glm::vec3 &point) {
+            min = glm::min(min, point);
+            max = glm::max(max, point);
+        }
+        
+        void expand(const Bounds &other) {
+            min = glm::min(min, other.min);
+            max = glm::max(max, other.max);
+        }
+        
+        glm::vec3 center() const { return (min + max) * 0.5f; }
+        glm::vec3 extent() const { return max - min; }
+        float diagonal() const { return glm::length(extent()); }
+        bool is_valid() const { return min.x <= max.x; }
+    };
+    
     // Helper function to build global buffers
     void build_global_buffers();
+    
+    // Compute scene bounding box from all instances and meshes
+    Bounds compute_bounds() const;
 
     Scene(const std::string &fname, MaterialMode material_mode);
     Scene() = default;
