@@ -396,7 +396,11 @@ void RayGen()
             float3 wi_env = float3(sin_theta * sin_phi, cos_theta, -sin_theta * cos_phi);
             
             // Step 3: Sample environment map at this UV
+            #ifdef VULKAN
+            float3 env_radiance = environment_map.SampleLevel(float2(env_u, env_v), 0).rgb;
+            #else
             float3 env_radiance = environment_map.SampleLevel(tex_sampler, float2(env_u, env_v), 0).rgb;
+            #endif
             
             // Step 4: Trace shadow ray to check visibility (ray to infinity)
             RayDesc env_shadow_ray;
