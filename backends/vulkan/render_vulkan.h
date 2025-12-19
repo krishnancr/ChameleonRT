@@ -73,6 +73,10 @@ struct RenderVulkan : RenderBackend {
     // Environment map resources
     std::shared_ptr<vkrt::Texture2D> env_map_texture;
     VkSampler env_map_sampler = VK_NULL_HANDLE;
+    std::shared_ptr<vkrt::Buffer> env_marginal_cdf_buffer;
+    std::shared_ptr<vkrt::Buffer> env_conditional_cdf_buffer;
+    uint32_t env_width = 0;
+    uint32_t env_height = 0;
     bool has_environment = false;
 
     VkCommandPool command_pool = VK_NULL_HANDLE;

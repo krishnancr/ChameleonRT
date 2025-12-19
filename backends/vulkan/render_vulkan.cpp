@@ -1,4 +1,5 @@
 #include "render_vulkan.h"
+#include "environment_sampling.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -799,14 +800,16 @@ void RenderVulkan::set_scene(const Scene &scene)
     }
 
 #ifdef USE_SLANG_COMPILER
-    // Create scene params buffer (contains num_lights for Slang shader)
-    // Slang path uses descriptor binding 7 instead of SBT for num_lights
+    // Create scene params buffer (contains num_lights, env_width, env_height for Slang shader)
+    // Slang path uses descriptor binding 7 instead of SBT for scene params
     scene_params = vkrt::Buffer::host(
-        *device, sizeof(uint32_t), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        *device, 3 * sizeof(uint32_t), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     {
         void *map = scene_params->map();
         uint32_t num_lights = static_cast<uint32_t>(scene.lights.size());
         std::memcpy(map, &num_lights, sizeof(uint32_t));
+        std::memcpy(static_cast<uint8_t*>(map) + sizeof(uint32_t), &env_width, sizeof(uint32_t));
+        std::memcpy(static_cast<uint8_t*>(map) + 2 * sizeof(uint32_t), &env_height, sizeof(uint32_t));
         scene_params->unmap();
     }
 
@@ -1080,6 +1083,11 @@ void RenderVulkan::build_raytracing_pipeline()
             // Environment map at binding 15
             .add_binding(
                 15, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_MISS_BIT_KHR)
+            // Environment CDF buffers at binding 16-17
+            .add_binding(
+                16, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_MISS_BIT_KHR)
+            .add_binding(
+                17, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_MISS_BIT_KHR)
             // Textures at binding 30 (single descriptor set architecture)
             .add_binding(
                 30,
@@ -1292,7 +1300,7 @@ void RenderVulkan::build_shader_descriptor_table()
 #else
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},  // ViewParams only (GLSL uses SBT)
 #endif
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},  // 2 existing + 5 global buffers
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9},  // 2 existing + 5 global buffers + 2 CDF buffers
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                              std::max(uint32_t(textures.size()), uint32_t(1)) + 1}};  // +1 for environment map at binding 15
 
@@ -1462,6 +1470,44 @@ void RenderVulkan::build_shader_descriptor_table()
         env_write.pImageInfo = &env_image_info;
         
         vkUpdateDescriptorSets(device->logical_device(), 1, &env_write, 0, nullptr);
+    }
+
+    // Environment marginal CDF buffer (binding 16)
+    if (env_marginal_cdf_buffer) {
+        VkDescriptorBufferInfo marginal_info = {};
+        marginal_info.buffer = env_marginal_cdf_buffer->handle();
+        marginal_info.offset = 0;
+        marginal_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet marginal_write = {};
+        marginal_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        marginal_write.dstSet = desc_set;
+        marginal_write.dstBinding = 16;
+        marginal_write.dstArrayElement = 0;
+        marginal_write.descriptorCount = 1;
+        marginal_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        marginal_write.pBufferInfo = &marginal_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &marginal_write, 0, nullptr);
+    }
+
+    // Environment conditional CDF buffer (binding 17)
+    if (env_conditional_cdf_buffer) {
+        VkDescriptorBufferInfo conditional_info = {};
+        conditional_info.buffer = env_conditional_cdf_buffer->handle();
+        conditional_info.offset = 0;
+        conditional_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet conditional_write = {};
+        conditional_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        conditional_write.dstSet = desc_set;
+        conditional_write.dstBinding = 17;
+        conditional_write.dstArrayElement = 0;
+        conditional_write.descriptorCount = 1;
+        conditional_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        conditional_write.pBufferInfo = &conditional_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &conditional_write, 0, nullptr);
     }
 
 #ifdef ENABLE_OIDN
@@ -1811,6 +1857,15 @@ void RenderVulkan::load_environment_map(const std::string& path) {
 }
 
 void RenderVulkan::upload_environment_map(const HDRImage& img) {
+    // Store dimensions
+    env_width = img.width;
+    env_height = img.height;
+    
+    // Build CDF for importance sampling
+    std::cout << "Building environment map CDF..." << std::endl;
+    envsampling::EnvironmentCDF cdf = envsampling::build_environment_cdf(
+        img.data, img.width, img.height);
+    
     // Create GPU texture for environment map (RGBA32F format)
     env_map_texture = vkrt::Texture2D::device(
         *device,
@@ -1819,7 +1874,7 @@ void RenderVulkan::upload_environment_map(const HDRImage& img) {
         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
     );
     
-    // Create upload buffer
+    // Create upload buffer for texture
     const size_t upload_size = img.width * img.height * 4 * sizeof(float);
     auto upload_buf = vkrt::Buffer::host(
         *device,
@@ -1832,12 +1887,58 @@ void RenderVulkan::upload_environment_map(const HDRImage& img) {
     std::memcpy(mapped, img.data, upload_size);
     upload_buf->unmap();
     
-    // Record commands to upload texture
+    // Create CDF buffers
+    // Marginal CDF buffer
+    const size_t marginal_size = cdf.marginal_cdf.size() * sizeof(float);
+    env_marginal_cdf_buffer = vkrt::Buffer::device(
+        *device,
+        marginal_size,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+    );
+    
+    auto marginal_upload = vkrt::Buffer::host(
+        *device,
+        marginal_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    void* marginal_map = marginal_upload->map();
+    std::memcpy(marginal_map, cdf.marginal_cdf.data(), marginal_size);
+    marginal_upload->unmap();
+    
+    // Conditional CDF buffer (flattened 2D array)
+    std::vector<float> conditional_flat;
+    conditional_flat.reserve(img.width * img.height);
+    for (int v = 0; v < img.height; ++v) {
+        conditional_flat.insert(conditional_flat.end(),
+                               cdf.conditional_cdfs[v].begin(),
+                               cdf.conditional_cdfs[v].end());
+    }
+    
+    const size_t conditional_size = conditional_flat.size() * sizeof(float);
+    env_conditional_cdf_buffer = vkrt::Buffer::device(
+        *device,
+        conditional_size,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+    );
+    
+    auto conditional_upload = vkrt::Buffer::host(
+        *device,
+        conditional_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    void* conditional_map = conditional_upload->map();
+    std::memcpy(conditional_map, conditional_flat.data(), conditional_size);
+    conditional_upload->unmap();
+    
+    // Record commands to upload everything
     VkCommandBufferBeginInfo begin_info = {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
     
+    // Upload texture
     // Transition image to transfer destination layout
     VkImageMemoryBarrier img_barrier = {};
     img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1894,6 +1995,43 @@ void RenderVulkan::upload_environment_map(const HDRImage& img) {
                          0, nullptr,
                          1, &img_barrier);
     
+    // Upload CDF buffers
+    VkBufferCopy marginal_copy = {};
+    marginal_copy.size = marginal_size;
+    vkCmdCopyBuffer(command_buffer,
+                    marginal_upload->handle(),
+                    env_marginal_cdf_buffer->handle(),
+                    1, &marginal_copy);
+    
+    VkBufferCopy conditional_copy = {};
+    conditional_copy.size = conditional_size;
+    vkCmdCopyBuffer(command_buffer,
+                    conditional_upload->handle(),
+                    env_conditional_cdf_buffer->handle(),
+                    1, &conditional_copy);
+    
+    // Buffer barriers to ensure transfers complete before shader access
+    VkBufferMemoryBarrier buffer_barriers[2] = {};
+    buffer_barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    buffer_barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    buffer_barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    buffer_barriers[0].buffer = env_marginal_cdf_buffer->handle();
+    buffer_barriers[0].size = VK_WHOLE_SIZE;
+    
+    buffer_barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    buffer_barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    buffer_barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    buffer_barriers[1].buffer = env_conditional_cdf_buffer->handle();
+    buffer_barriers[1].size = VK_WHOLE_SIZE;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         0,
+                         0, nullptr,
+                         2, buffer_barriers,
+                         0, nullptr);
+    
     CHECK_VULKAN(vkEndCommandBuffer(command_buffer));
     
     // Submit and wait for completion
@@ -1924,6 +2062,10 @@ void RenderVulkan::upload_environment_map(const HDRImage& img) {
         CHECK_VULKAN(vkCreateSampler(device->logical_device(), &sampler_info, 
                                      nullptr, &env_map_sampler));
     }
+    
+    std::cout << "Environment map CDF uploaded to GPU (" 
+              << cdf.marginal_cdf.size() << " marginal + "
+              << conditional_flat.size() << " conditional entries)" << std::endl;
 }
 
 void RenderVulkan::create_dummy_environment_map() {

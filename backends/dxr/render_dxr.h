@@ -51,6 +51,10 @@ struct RenderDXR : RenderBackend {
 
     // Environment map resources
     dxr::Texture2D env_map_texture;
+    dxr::Buffer env_marginal_cdf_buffer;
+    dxr::Buffer env_conditional_cdf_buffer;
+    uint32_t env_width = 0;
+    uint32_t env_height = 0;
     bool has_environment = false;
 
 #ifdef ENABLE_OIDN

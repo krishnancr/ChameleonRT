@@ -1,4 +1,5 @@
 #include "render_dxr.h"
+#include "environment_sampling.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -681,6 +682,15 @@ void RenderDXR::load_environment_map(const std::string& path) {
 }
 
 void RenderDXR::upload_environment_map(const HDRImage& img) {
+    // Store dimensions
+    env_width = img.width;
+    env_height = img.height;
+    
+    // Build CDF for importance sampling
+    std::cout << "Building environment map CDF..." << std::endl;
+    envsampling::EnvironmentCDF cdf = envsampling::build_environment_cdf(
+        img.data, img.width, img.height);
+    
     // Create GPU texture
     env_map_texture = dxr::Texture2D::device(
         device.Get(),
@@ -690,7 +700,7 @@ void RenderDXR::upload_environment_map(const HDRImage& img) {
         D3D12_RESOURCE_FLAG_NONE
     );
     
-    // Create upload buffer
+    // Create upload buffer for texture
     const size_t upload_size = env_map_texture.linear_row_pitch() * img.height;
     
     dxr::Buffer upload_buf = dxr::Buffer::upload(
@@ -718,17 +728,77 @@ void RenderDXR::upload_environment_map(const HDRImage& img) {
     }
     upload_buf.unmap();
     
+    // Create CDF buffers
+    // Marginal CDF buffer (one entry per row)
+    const size_t marginal_size = cdf.marginal_cdf.size() * sizeof(float);
+    env_marginal_cdf_buffer = dxr::Buffer::device(
+        device.Get(),
+        marginal_size,
+        D3D12_RESOURCE_STATE_COPY_DEST
+    );
+    
+    dxr::Buffer marginal_upload = dxr::Buffer::upload(
+        device.Get(),
+        marginal_size,
+        D3D12_RESOURCE_STATE_GENERIC_READ
+    );
+    
+    void* marginal_map = marginal_upload.map();
+    std::memcpy(marginal_map, cdf.marginal_cdf.data(), marginal_size);
+    marginal_upload.unmap();
+    
+    // Conditional CDF buffer (flattened 2D array)
+    std::vector<float> conditional_flat;
+    conditional_flat.reserve(img.width * img.height);
+    for (int v = 0; v < img.height; ++v) {
+        conditional_flat.insert(conditional_flat.end(),
+                               cdf.conditional_cdfs[v].begin(),
+                               cdf.conditional_cdfs[v].end());
+    }
+    
+    const size_t conditional_size = conditional_flat.size() * sizeof(float);
+    env_conditional_cdf_buffer = dxr::Buffer::device(
+        device.Get(),
+        conditional_size,
+        D3D12_RESOURCE_STATE_COPY_DEST
+    );
+    
+    dxr::Buffer conditional_upload = dxr::Buffer::upload(
+        device.Get(),
+        conditional_size,
+        D3D12_RESOURCE_STATE_GENERIC_READ
+    );
+    
+    void* conditional_map = conditional_upload.map();
+    std::memcpy(conditional_map, conditional_flat.data(), conditional_size);
+    conditional_upload.unmap();
+    
     // Upload to GPU
     CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
     
+    // Upload texture
     env_map_texture.upload(cmd_list.Get(), upload_buf);
-    auto b = dxr::barrier_transition(env_map_texture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    cmd_list->ResourceBarrier(1, &b);
+    auto tex_barrier = dxr::barrier_transition(env_map_texture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    cmd_list->ResourceBarrier(1, &tex_barrier);
+    
+    // Upload marginal CDF
+    cmd_list->CopyResource(env_marginal_cdf_buffer.get(), marginal_upload.get());
+    auto marginal_barrier = dxr::barrier_transition(env_marginal_cdf_buffer, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    cmd_list->ResourceBarrier(1, &marginal_barrier);
+    
+    // Upload conditional CDF
+    cmd_list->CopyResource(env_conditional_cdf_buffer.get(), conditional_upload.get());
+    auto conditional_barrier = dxr::barrier_transition(env_conditional_cdf_buffer, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    cmd_list->ResourceBarrier(1, &conditional_barrier);
     
     CHECK_ERR(cmd_list->Close());
     ID3D12CommandList* lists[] = {cmd_list.Get()};
     cmd_queue->ExecuteCommandLists(1, lists);
     sync_gpu();
+    
+    std::cout << "Environment map CDF uploaded to GPU (" 
+              << cdf.marginal_cdf.size() << " marginal + "
+              << conditional_flat.size() << " conditional entries)" << std::endl;
 }
 
 RenderStats RenderDXR::render(const glm::vec3 &pos,
@@ -1093,6 +1163,7 @@ void RenderDXR::build_shader_resource_heap()
                            .add_srv_range(!textures.empty() ? textures.size() : 1, 30, 0)
                            .add_srv_range(5, 10, 0)  // t10-t14 (global buffers)
                            .add_srv_range(1, 15, 0)  // t15 (environment map)
+                           .add_srv_range(2, 16, 0)  // t16-t17 (env CDF buffers)
                            .create(device.Get());
 
     // Sampler heap: s0 (tex_sampler for both material textures and environment map)
@@ -1109,6 +1180,8 @@ void RenderDXR::build_shader_binding_table()
 
         const uint32_t num_lights = light_buf.size() / sizeof(QuadLight);
         std::memcpy(map + sig->offset("SceneParams"), &num_lights, sizeof(uint32_t));
+        std::memcpy(map + sig->offset("SceneParams") + sizeof(uint32_t), &env_width, sizeof(uint32_t));
+        std::memcpy(map + sig->offset("SceneParams") + 2 * sizeof(uint32_t), &env_height, sizeof(uint32_t));
     }
     
     // Write meshDescIndex to shader records for ClosestHit
@@ -1475,6 +1548,66 @@ void RenderDXR::build_descriptor_heap()
         null_desc.Texture2D.MipLevels = 1;
         
         device->CreateShaderResourceView(nullptr, &null_desc, heap_handle);
+    }
+    heap_handle.ptr += descriptor_increment;
+
+    // ===== t16: env_marginal_cdf SRV =====
+    if (has_environment && env_marginal_cdf_buffer.get()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC marginal_srv_desc = {};
+        marginal_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        marginal_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        marginal_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        marginal_srv_desc.Buffer.FirstElement = 0;
+        marginal_srv_desc.Buffer.NumElements = env_height;
+        marginal_srv_desc.Buffer.StructureByteStride = sizeof(float);
+        marginal_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        
+        device->CreateShaderResourceView(
+            env_marginal_cdf_buffer.get(),
+            &marginal_srv_desc,
+            heap_handle
+        );
+    } else {
+        // Create null descriptor
+        D3D12_SHADER_RESOURCE_VIEW_DESC null_srv_desc = {};
+        null_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        null_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        null_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        null_srv_desc.Buffer.FirstElement = 0;
+        null_srv_desc.Buffer.NumElements = 0;
+        null_srv_desc.Buffer.StructureByteStride = sizeof(float);
+        null_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        device->CreateShaderResourceView(nullptr, &null_srv_desc, heap_handle);
+    }
+    heap_handle.ptr += descriptor_increment;
+
+    // ===== t17: env_conditional_cdf SRV =====
+    if (has_environment && env_conditional_cdf_buffer.get()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC conditional_srv_desc = {};
+        conditional_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        conditional_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        conditional_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        conditional_srv_desc.Buffer.FirstElement = 0;
+        conditional_srv_desc.Buffer.NumElements = env_width * env_height;
+        conditional_srv_desc.Buffer.StructureByteStride = sizeof(float);
+        conditional_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        
+        device->CreateShaderResourceView(
+            env_conditional_cdf_buffer.get(),
+            &conditional_srv_desc,
+            heap_handle
+        );
+    } else {
+        // Create null descriptor
+        D3D12_SHADER_RESOURCE_VIEW_DESC null_srv_desc = {};
+        null_srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        null_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        null_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        null_srv_desc.Buffer.FirstElement = 0;
+        null_srv_desc.Buffer.NumElements = 0;
+        null_srv_desc.Buffer.StructureByteStride = sizeof(float);
+        null_srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        device->CreateShaderResourceView(nullptr, &null_srv_desc, heap_handle);
     }
     heap_handle.ptr += descriptor_increment;
 

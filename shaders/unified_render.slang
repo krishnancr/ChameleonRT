@@ -30,6 +30,8 @@ import modules.lights;
 [[vk::binding(5, 0)]] StructuredBuffer<QuadLight> lights;
 [[vk::binding(7, 0)]] cbuffer SceneParams {
     uint num_lights;
+    uint env_map_width;
+    uint env_map_height;
 }
 [[vk::binding(10, 0)]] StructuredBuffer<float3> globalVertices;
 [[vk::binding(11, 0)]] StructuredBuffer<uint3> globalIndices;
@@ -37,6 +39,8 @@ import modules.lights;
 [[vk::binding(13, 0)]] StructuredBuffer<float2> globalUVs;
 [[vk::binding(14, 0)]] StructuredBuffer<MeshDesc> meshDescs;
 [[vk::binding(15, 0)]] Sampler2D environment_map;  // Combined image sampler for env map
+[[vk::binding(16, 0)]] StructuredBuffer<float> env_marginal_cdf;  // Marginal CDF for env sampling
+[[vk::binding(17, 0)]] StructuredBuffer<float> env_conditional_cdf;  // Conditional CDFs for env sampling
 [[vk::binding(30, 0)]] Sampler2D textures[];
 [[vk::shader_record]] cbuffer HitGroupData { uint meshDescIndex; }
 #else
@@ -57,6 +61,8 @@ cbuffer ViewParams : register(b0) {
 }
 cbuffer SceneParams : register(b1) {
     uint num_lights;
+    uint env_map_width;
+    uint env_map_height;
 }
 StructuredBuffer<MaterialParams> material_params : register(t1);
 StructuredBuffer<QuadLight> lights : register(t2);
@@ -66,6 +72,8 @@ StructuredBuffer<float3> globalNormals : register(t12, space0);
 StructuredBuffer<float2> globalUVs : register(t13, space0);
 StructuredBuffer<MeshDesc> meshDescs : register(t14, space0);
 Texture2D<float4> environment_map : register(t15, space0);
+StructuredBuffer<float> env_marginal_cdf : register(t16, space0);  // Marginal CDF for env sampling
+StructuredBuffer<float> env_conditional_cdf : register(t17, space0);  // Conditional CDFs for env sampling
 Texture2D textures[] : register(t30, space0);
 SamplerState tex_sampler : register(s0);
 cbuffer HitGroupData : register(b2, space0) { uint meshDescIndex; }
