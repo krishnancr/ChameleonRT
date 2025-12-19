@@ -5,6 +5,7 @@ import modules.util;
 import modules.lcg_rng;
 import modules.disney_bsdf;
 import modules.lights;
+import modules.environment_sampling;
 
 // =============================================================================
 // BACKEND-SPECIFIC RESOURCE BINDINGS

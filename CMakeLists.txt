@@ -122,6 +122,7 @@ if(ENABLE_SLANG)
         modules/lcg_rng.slang
         modules/disney_bsdf.slang
         modules/lights.slang
+        modules/environment_sampling.slang
     )
     
     # Create shaders directory in output
