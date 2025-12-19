@@ -266,10 +266,19 @@ void RayGen()
             
             if (bounce > 0 && env_width > 1 && prev_bsdf_pdf > EPSILON) {
                 // This ray was sampled from BRDF, apply MIS weight
-                // Uniform PDF over sphere = 1 / (4π)
-                float env_pdf = M_1_PI * 0.25f;
+                // Importance-sampled environment PDF (varies per location)
+                // Convert direction to UV for PDF evaluation
+                float3 dir = normalize(ray_dir);
+                float env_u = (1.0f + atan2(dir.x, -dir.z) * M_1_PI) * 0.5f;
+                float env_v = acos(dir.y) * M_1_PI;
                 
-                // MIS weight: BRDF PDF vs environment PDF
+                float env_pdf = environment_pdf(
+                    env_u, env_v,
+                    env_marginal_cdf, env_conditional_cdf,
+                    env_map_width, env_map_height
+                );
+                
+                // MIS weight: BRDF PDF vs importance-sampled environment PDF
                 float mis_weight = power_heuristic(1.0f, prev_bsdf_pdf, 1.0f, env_pdf);
                 
                 sample_illum += path_throughput * env_radiance * mis_weight;
@@ -388,9 +397,18 @@ void RayGen()
         environment_map.GetDimensions(env_width, env_height);
         
         if (env_width > 1) {
-            // Step 1: Generate random UV coordinates (uniform sampling)
-            float env_u = lcg_randomf(rng);
-            float env_v = lcg_randomf(rng);
+            // Step 1: Importance sample environment map using CDF
+            float random_u = lcg_randomf(rng);
+            float random_v = lcg_randomf(rng);
+            
+            EnvSample env_sample = sample_environment_map(
+                random_u, random_v,
+                env_marginal_cdf, env_conditional_cdf,
+                env_map_width, env_map_height
+            );
+            
+            float env_u = env_sample.u;  // Use importance-sampled UV coordinates
+            float env_v = env_sample.v;
             
             // Step 2: Convert UV to direction (spherical lat-long mapping)
             float theta = env_v * M_PI;           // v -> [0, π]
@@ -443,8 +461,8 @@ void RayGen()
                 float3 env_bsdf = disney_brdf(mat, v_z, w_o, wi_env, v_x, v_y);
                 float env_bsdf_pdf = disney_pdf(mat, v_z, w_o, wi_env, v_x, v_y);
                 
-                // Uniform PDF over sphere = 1 / (4π) ≈ 0.0796
-                float env_pdf = M_1_PI * 0.25f;
+                // Importance-sampled PDF (varies per location based on luminance)
+                float env_pdf = env_sample.pdf;
                 
                 // MIS weight (power heuristic, same as quad lights)
                 if (env_bsdf_pdf >= EPSILON) {

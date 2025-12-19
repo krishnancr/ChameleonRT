@@ -197,8 +197,25 @@ void Scene::load_obj(const std::string &file)
         for (const auto &m : obj_materials) {
             DisneyMaterial d;
             d.base_color = glm::vec3(m.diffuse[0], m.diffuse[1], m.diffuse[2]);
-            d.specular = glm::clamp(m.shininess / 500.f, 0.f, 1.f);
-            d.roughness = glm::clamp(1.f - d.specular, 0.f, 1.f);
+            
+            // Convert Phong shininess (Ns) to Disney roughness
+            // Phong: high Ns = sharp specular (Ns typically 0-1000)
+            // Disney: low roughness = sharp specular (roughness 0-1)
+            // Approximate conversion: roughness ≈ sqrt(2 / (Ns + 2))
+            // For common values: Ns=40 → roughness≈0.22, Ns=400 → roughness≈0.07
+            if (m.shininess > 0.0f) {
+                d.roughness = glm::clamp(std::sqrt(2.0f / (m.shininess + 2.0f)), 0.01f, 1.0f);
+            } else {
+                d.roughness = 1.0f;  // Fully rough/diffuse
+            }
+            
+            // Specular intensity from Ks (specular color magnitude)
+            float ks_intensity = (m.specular[0] + m.specular[1] + m.specular[2]) / 3.0f;
+            d.specular = glm::clamp(ks_intensity, 0.0f, 1.0f);
+            
+            // Metallic: OBJ doesn't have this, keep at 0 (dielectric)
+            d.metallic = 0.0f;
+            
             // Note: need to debug the transmissive materials
             d.specular_transmission = 0.f;
             // d.specular_transmission = glm::clamp(1.f - m.dissolve, 0.f, 1.f);
