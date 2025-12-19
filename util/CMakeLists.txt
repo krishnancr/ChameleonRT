@@ -10,7 +10,8 @@ add_library(util
     gltf_types.cpp
     flatten_gltf.cpp
     file_mapping.cpp
-    render_plugin.cpp)
+    render_plugin.cpp
+    environment_sampling.cpp)
 
 set_target_properties(util PROPERTIES
     CXX_STANDARD 14
