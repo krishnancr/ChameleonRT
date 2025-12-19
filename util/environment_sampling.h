@@ -26,12 +26,34 @@ struct EnvSample {
 // width, height: dimensions of environment map
 EnvironmentCDF build_environment_cdf(const float* image_data, int width, int height);
 
+// Sample environment map using importance sampling
+// random_u, random_v: uniform random numbers in [0, 1)
+// Returns UV coordinates and PDF value
+EnvSample sample_environment_map(
+    float random_u, 
+    float random_v,
+    const EnvironmentCDF& cdf);
+
+// Evaluate PDF at given UV coordinate
+// u, v: UV coordinates [0, 1)
+// Returns probability density at this location
+float environment_pdf(
+    float u, 
+    float v,
+    const EnvironmentCDF& cdf);
+
 // Print statistics about the CDF for debugging
 void print_cdf_statistics(const EnvironmentCDF& cdf);
 
-// Validation tests
+// Validation tests (Stage 1)
 bool test_cdf_monotonicity(const EnvironmentCDF& cdf);
 bool test_cdf_normalization(const EnvironmentCDF& cdf);
 bool test_uniform_environment();
+
+// Sampling tests (Stage 3)
+bool test_sample_distribution(const EnvironmentCDF& cdf, const float* image_data);
+bool test_pdf_integration(const EnvironmentCDF& cdf);
+bool test_pdf_consistency(const EnvironmentCDF& cdf);
+bool test_single_bright_pixel();
 
 } // namespace envsampling
