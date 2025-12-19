@@ -206,8 +206,13 @@ void run_app(const std::vector<std::string> &args,
            << "# Instances: " << scene.instances.size() << "\n"
            << "# Materials: " << scene.materials.size() << "\n"
            << "# Textures: " << scene.textures.size() << "\n"
-           << "# Lights: " << scene.lights.size() << "\n"
-           << "# Cameras: " << scene.cameras.size() << "\n"
+           << "# Lights: " << scene.lights.size() << "\n";
+        
+        if (!scene.environment_map_path.empty()) {
+            ss << "# Environment Light: " << scene.environment_map_path << "\n";
+        }
+        
+        ss << "# Cameras: " << scene.cameras.size() << "\n"
            << "# Samples per Pixel: " << scene.samples_per_pixel;
 
         scene_info = ss.str();
