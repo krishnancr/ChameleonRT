@@ -43,4 +43,7 @@ struct DisneyMaterial {
     float ior = 1.5f;
     float specular_transmission = 0.f;
     glm::vec2 pad = glm::vec2(0.f);
+
+    glm::vec3 emission = glm::vec3(0.f);
+    float pad2 = 0.f;
 };

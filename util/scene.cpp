@@ -220,6 +220,9 @@ void Scene::load_obj(const std::string &file)
             d.specular_transmission = 0.f;
             // d.specular_transmission = glm::clamp(1.f - m.dissolve, 0.f, 1.f);
 
+            // Emission (Ke)
+            d.emission = glm::vec3(m.emission[0], m.emission[1], m.emission[2]);
+
             if (!m.diffuse_texname.empty()) {
                 std::string path = m.diffuse_texname;
                 canonicalize_path(path);

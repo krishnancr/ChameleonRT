@@ -120,6 +120,9 @@ struct MaterialParams {
     float ior;
     float specular_transmission;
     float2 pad;
+
+    float3 emission;
+    float pad2;
 };
 
 // Primary ray payload (matches HLSL HitInfo structure)
@@ -181,6 +184,9 @@ MaterialParams evaluate_material_at_surface(uint mat_id, float2 texcoord)
     evaluated.clearcoat_gloss = sample_scalar_texture_param(source.clearcoat_gloss, texcoord);
     evaluated.ior = sample_scalar_texture_param(source.ior, texcoord);
     evaluated.specular_transmission = sample_scalar_texture_param(source.specular_transmission, texcoord);
+    
+    // Copy emission (no texture support for now)
+    evaluated.emission = source.emission;
     
     return evaluated;
 }
@@ -310,6 +316,11 @@ void RayGen()
         // Evaluate material at surface
         MaterialParams mat_params = evaluate_material_at_surface(material_id, uv);
         
+        // Add emissive contribution if surface emits light
+        if (any(mat_params.emission > 0.0f)) {
+            sample_illum += path_throughput * mat_params.emission;
+        }
+        
         // Create Disney material
         mat.base_color = mat_params.base_color;
         mat.metallic = mat_params.metallic;
@@ -323,6 +334,7 @@ void RayGen()
         mat.clearcoat_gloss = mat_params.clearcoat_gloss;
         mat.ior = mat_params.ior;
         mat.specular_transmission = mat_params.specular_transmission;
+        mat.emission = mat_params.emission;
         
         // Flip normal to face camera if opaque
         if (mat.specular_transmission == 0.0f && dot(w_o, normal) < 0.0f) {
