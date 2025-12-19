@@ -281,10 +281,15 @@ void RayGen()
                 // MIS weight: BRDF PDF vs importance-sampled environment PDF
                 float mis_weight = power_heuristic(1.0f, prev_bsdf_pdf, 1.0f, env_pdf);
                 
-                sample_illum += path_throughput * env_radiance * mis_weight;
+                // Clamp contribution to prevent extreme fireflies
+                float3 contribution = path_throughput * env_radiance * mis_weight;
+                contribution = min(contribution, float3(0.5f));
+                sample_illum += contribution;
             } else {
                 // Primary ray or no environment map - add full contribution
-                sample_illum += path_throughput * env_radiance;
+                float3 contribution = path_throughput * env_radiance;
+                contribution = min(contribution, float3(0.5f));
+                sample_illum += contribution;
             }
             
             // Capture first-hit data for OIDN (sky color as albedo, no normal for miss)
@@ -387,7 +392,9 @@ void RayGen()
             if (light_pdf >= EPSILON && bsdf_pdf >= EPSILON && shadow_hit.color_dist.w < 0) {
                 float3 bsdf = disney_brdf(mat, v_z, w_o, light_dir, v_x, v_y);
                 float w = power_heuristic(1.0f, light_pdf, 1.0f, bsdf_pdf);
-                illum += bsdf * light.emission.rgb * abs(dot(light_dir, v_z)) * w / light_pdf;
+                float3 contribution = bsdf * light.emission.rgb * abs(dot(light_dir, v_z)) * w / light_pdf;
+                contribution = min(contribution, float3(0.5f));
+                illum += contribution;
             }
         }
         
@@ -464,13 +471,20 @@ void RayGen()
                 // Importance-sampled PDF (varies per location based on luminance)
                 float env_pdf = env_sample.pdf;
                 
+                // Clamp PDF to prevent fireflies from division by near-zero
+                env_pdf = max(env_pdf, 1e-6f);
+                
                 // MIS weight (power heuristic, same as quad lights)
                 if (env_bsdf_pdf >= EPSILON) {
                     float env_mis_weight = power_heuristic(1.0f, env_pdf, 1.0f, env_bsdf_pdf);
                     
-                    // Add contribution
+                    // Add contribution with firefly clamping
                     float env_cos_term = abs(dot(wi_env, v_z));
-                    illum += env_bsdf * env_radiance * env_cos_term * env_mis_weight / env_pdf;
+                    float3 contribution = env_bsdf * env_radiance * env_cos_term * env_mis_weight / env_pdf;
+                    
+                    // Clamp extreme fireflies
+                    contribution = min(contribution, float3(0.5f));
+                    illum += contribution;
                 }
             }
         }
@@ -523,7 +537,10 @@ void RayGen()
 #endif
                     
                     if (shadow_hit.color_dist.w < 0) {
-                        sample_illum += path_throughput * bsdf * light.emission.rgb * abs(dot(w_i, v_z)) * w / pdf;
+                        float3 contribution = path_throughput * bsdf * light.emission.rgb * abs(dot(w_i, v_z)) * w / pdf;
+                        // Clamp extreme fireflies
+                        contribution = min(contribution, float3(0.5f));
+                        sample_illum += contribution;
                     }
                 }
             }
@@ -533,6 +550,9 @@ void RayGen()
         bool terminate = (pdf <= 0.0f) || all(bsdf == float3(0.0f));
         
         if (!terminate) {
+            // Clamp PDF to prevent extreme throughput values
+            pdf = max(pdf, 1e-6f);
+            
             // Only compute throughput if we're continuing (pdf is guaranteed > 0 here)
             float cos_theta = abs(dot(w_i, v_z));
             path_throughput *= (bsdf * cos_theta) / pdf;
@@ -578,19 +598,23 @@ void RayGen()
     // Accumulate across frames for temporal convergence
     uint pixel_idx = pixel.y * uint(dims.x) + pixel.x;
     
+    // Track total samples across all frames (Option 2: highest quality + best performance)
+    uint total_samples = frame_id * samples_per_pixel;
+    uint new_total = total_samples + samples_per_pixel;
+    
     // Accumulate color
     float4 accum_color = accum_buffer[pixel_idx].color;
-    accum_color = (float4(illum, 1.0) + frame_id * accum_color) / (frame_id + 1);
+    accum_color = (accum_color * float(total_samples) + float4(illum, 1.0) * float(samples_per_pixel)) / float(new_total);
     accum_buffer[pixel_idx].color = accum_color;
     
     // Accumulate albedo
     float4 accum_albedo = accum_buffer[pixel_idx].albedo;
-    accum_albedo = (float4(first_albedo, 1.0) + frame_id * accum_albedo) / (frame_id + 1);
+    accum_albedo = (accum_albedo * float(total_samples) + float4(first_albedo, 1.0) * float(samples_per_pixel)) / float(new_total);
     accum_buffer[pixel_idx].albedo = accum_albedo;
     
     // Accumulate normal
     float4 accum_normal = accum_buffer[pixel_idx].normal;
-    accum_normal = (float4(first_normal, 1.0) + frame_id * accum_normal) / (frame_id + 1);
+    accum_normal = (accum_normal * float(total_samples) + float4(first_normal, 1.0) * float(samples_per_pixel)) / float(new_total);
     accum_buffer[pixel_idx].normal = accum_normal;
     
     // ===== DISPLAY OUTPUT =====
@@ -667,6 +691,22 @@ void ClosestHit(
     float3 vb = globalVertices[NonUniformResourceIndex(idx.y)];
     float3 vc = globalVertices[NonUniformResourceIndex(idx.z)];
     float3 ng = normalize(cross(vb - va, vc - va));
+    
+    // Interpolate vertex normals if available, otherwise use geometric normal
+    float3 normal = ng;
+    if (mesh.num_normals > 0) {
+        uint3 local_vertex_idx = idx - uint3(mesh.vbOffset, mesh.vbOffset, mesh.vbOffset);
+        float3 na = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.x)];
+        float3 nb = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.y)];
+        float3 nc = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.z)];
+        
+        // Barycentric interpolation of vertex normals
+        normal = normalize(
+            (1.f - bary.barycentrics.x - bary.barycentrics.y) * na
+            + bary.barycentrics.x * nb 
+            + bary.barycentrics.y * nc
+        );
+    }
 
     // Convert global vertex indices to local indices for UV lookup
     float2 uv = float2(0, 0);
@@ -681,7 +721,7 @@ void ClosestHit(
     }
 
     payload.color_dist = float4(uv, 0, RayTCurrent());
-    payload.normal = float4(ng, mesh.material_id);
+    payload.normal = float4(normal, mesh.material_id);
 }
 // ========== Shadow Miss Shader ==========
 
