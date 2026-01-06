@@ -287,14 +287,14 @@ void RayGen()
                 // MIS weight: BRDF PDF vs importance-sampled environment PDF
                 float mis_weight = power_heuristic(1.0f, prev_bsdf_pdf, 1.0f, env_pdf);
                 
-                // Clamp contribution to prevent extreme fireflies
+                // Add contribution with firefly clamping to prevent extreme outliers
                 float3 contribution = path_throughput * env_radiance * mis_weight;
-                contribution = min(contribution, float3(0.5f));
+                contribution = clamp_fireflies(contribution, 20.0f);
                 sample_illum += contribution;
             } else {
                 // Primary ray or no environment map - add full contribution
                 float3 contribution = path_throughput * env_radiance;
-                contribution = min(contribution, float3(0.5f));
+                contribution = clamp_fireflies(contribution, 20.0f);
                 sample_illum += contribution;
             }
             
@@ -405,7 +405,7 @@ void RayGen()
                 float3 bsdf = disney_brdf(mat, v_z, w_o, light_dir, v_x, v_y);
                 float w = power_heuristic(1.0f, light_pdf, 1.0f, bsdf_pdf);
                 float3 contribution = bsdf * light.emission.rgb * abs(dot(light_dir, v_z)) * w / light_pdf;
-                contribution = min(contribution, float3(0.5f));
+                contribution = clamp_fireflies(contribution, 20.0f);
                 illum += contribution;
             }
         }
@@ -490,12 +490,10 @@ void RayGen()
                 if (env_bsdf_pdf >= EPSILON) {
                     float env_mis_weight = power_heuristic(1.0f, env_pdf, 1.0f, env_bsdf_pdf);
                     
-                    // Add contribution with firefly clamping
+                    // Add contribution with firefly clamping to prevent glossy fireflies
                     float env_cos_term = abs(dot(wi_env, v_z));
                     float3 contribution = env_bsdf * env_radiance * env_cos_term * env_mis_weight / env_pdf;
-                    
-                    // Clamp extreme fireflies
-                    contribution = min(contribution, float3(0.5f));
+                    contribution = clamp_fireflies(contribution, 20.0f);
                     illum += contribution;
                 }
             }
@@ -550,8 +548,7 @@ void RayGen()
                     
                     if (shadow_hit.color_dist.w < 0) {
                         float3 contribution = path_throughput * bsdf * light.emission.rgb * abs(dot(w_i, v_z)) * w / pdf;
-                        // Clamp extreme fireflies
-                        contribution = min(contribution, float3(0.5f));
+                        contribution = clamp_fireflies(contribution, 20.0f);
                         sample_illum += contribution;
                     }
                 }

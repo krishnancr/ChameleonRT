@@ -52,6 +52,18 @@ float luminance(const float3 c) {
     return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
 }
 
+// Clamp extreme firefly samples while preserving color (hue)
+// This prevents extreme outliers from glossy surfaces hitting bright light sources
+// while allowing proper HDR accumulation of reasonable values
+float3 clamp_fireflies(const float3 color, float max_brightness) {
+    float lum = luminance(color);
+    if (lum > max_brightness) {
+        // Preserve hue/color ratios, just reduce brightness
+        return color * (max_brightness / lum);
+    }
+    return color;
+}
+
 // Square a value
 float pow2(float x) {
     return x * x;
