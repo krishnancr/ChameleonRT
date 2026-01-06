@@ -44,7 +44,7 @@ VKDisplay::VKDisplay(SDL_Window *window)
     SDL_version ver;
     SDL_GetVersion(&ver);
     if (ver.major == 2 && ver.minor == 0 && ver.patch < 8) {
-        std::cout << "SDL 2.0.8 or higher is required for the Vulkan display frontend\n";
+        std::cerr << "SDL 2.0.8 or higher is required for the Vulkan display frontend\n";
         throw std::runtime_error(
             "SDL 2.0.8 or higher is required for the Vulkan display frontend");
     }

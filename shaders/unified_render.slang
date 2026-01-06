@@ -102,6 +102,10 @@ struct MeshDesc {
     uint pad;           // Padding to 32 bytes
 };
 
+// Firefly clamping threshold (luminance)
+// Values above this are clamped to preserve color but prevent outliers from glossy surfaces
+static const float FIREFLY_CLAMP_THRESHOLD = 20.0f;
+
 // MaterialParams structure for material properties (matches HLSL layout)
 struct MaterialParams {
     float3 base_color;
@@ -289,12 +293,12 @@ void RayGen()
                 
                 // Add contribution with firefly clamping to prevent extreme outliers
                 float3 contribution = path_throughput * env_radiance * mis_weight;
-                contribution = clamp_fireflies(contribution, 20.0f);
+                contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
                 sample_illum += contribution;
             } else {
                 // Primary ray or no environment map - add full contribution
                 float3 contribution = path_throughput * env_radiance;
-                contribution = clamp_fireflies(contribution, 20.0f);
+                contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
                 sample_illum += contribution;
             }
             
@@ -356,8 +360,9 @@ void RayGen()
         float3 illum = float3(0.0f);
         
         // Iterate through all lights
-        // TODO: For scenes with many lights, optimize by randomly sampling a subset
-        // instead of looping through all lights (compensate with proper weighting)
+        // NOTE: Future optimization - for scenes with many lights (>10), consider
+        // randomly sampling a subset with proper weighting instead of iterating all.
+        // Current implementation is correct but may be slow with 100+ lights.
         for (uint light_idx = 0; light_idx < num_lights; ++light_idx) {
             QuadLight light = lights[light_idx];
             
@@ -405,7 +410,7 @@ void RayGen()
                 float3 bsdf = disney_brdf(mat, v_z, w_o, light_dir, v_x, v_y);
                 float w = power_heuristic(1.0f, light_pdf, 1.0f, bsdf_pdf);
                 float3 contribution = bsdf * light.emission.rgb * abs(dot(light_dir, v_z)) * w / light_pdf;
-                contribution = clamp_fireflies(contribution, 20.0f);
+                contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
                 illum += contribution;
             }
         }
@@ -493,7 +498,7 @@ void RayGen()
                     // Add contribution with firefly clamping to prevent glossy fireflies
                     float env_cos_term = abs(dot(wi_env, v_z));
                     float3 contribution = env_bsdf * env_radiance * env_cos_term * env_mis_weight / env_pdf;
-                    contribution = clamp_fireflies(contribution, 20.0f);
+                    contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
                     illum += contribution;
                 }
             }
@@ -548,7 +553,7 @@ void RayGen()
                     
                     if (shadow_hit.color_dist.w < 0) {
                         float3 contribution = path_throughput * bsdf * light.emission.rgb * abs(dot(w_i, v_z)) * w / pdf;
-                        contribution = clamp_fireflies(contribution, 20.0f);
+                        contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
                         sample_illum += contribution;
                     }
                 }

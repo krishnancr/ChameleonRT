@@ -1862,7 +1862,6 @@ void RenderVulkan::upload_environment_map(const HDRImage& img) {
     env_height = img.height;
     
     // Build CDF for importance sampling
-    std::cout << "Building environment map CDF..." << std::endl;
     envsampling::EnvironmentCDF cdf = envsampling::build_environment_cdf(
         img.data, img.width, img.height);
     
@@ -2062,10 +2061,6 @@ void RenderVulkan::upload_environment_map(const HDRImage& img) {
         CHECK_VULKAN(vkCreateSampler(device->logical_device(), &sampler_info, 
                                      nullptr, &env_map_sampler));
     }
-    
-    std::cout << "Environment map CDF uploaded to GPU (" 
-              << cdf.marginal_cdf.size() << " marginal + "
-              << conditional_flat.size() << " conditional entries)" << std::endl;
 }
 
 void RenderVulkan::create_dummy_environment_map() {

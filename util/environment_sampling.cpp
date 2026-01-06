@@ -22,8 +22,6 @@ EnvironmentCDF build_environment_cdf(const float* image_data, int width, int hei
     result.width = width;
     result.height = height;
     
-    std::cout << "Building environment CDF for " << width << "x" << height << " map..." << std::endl;
-    
     // Step 1: Calculate luminance with solid angle weighting
     std::vector<std::vector<float>> luminance(height, std::vector<float>(width));
     
@@ -96,8 +94,6 @@ EnvironmentCDF build_environment_cdf(const float* image_data, int width, int hei
         }
     }
     
-    std::cout << "CDF construction complete. Total luminance: " << total << std::endl;
-    
     return result;
 }
 
@@ -143,20 +139,18 @@ void print_cdf_statistics(const EnvironmentCDF& cdf) {
 }
 
 bool test_cdf_monotonicity(const EnvironmentCDF& cdf) {
-    std::cout << "Testing CDF monotonicity..." << std::endl;
-    
     bool success = true;
     int violations = 0;
     
     // Test marginal CDF
     for (int v = 1; v < cdf.height; ++v) {
         if (cdf.marginal_cdf[v] < cdf.marginal_cdf[v - 1]) {
-            std::cout << "  ERROR: Marginal CDF not monotonic at v=" << v 
+            std::cerr << "  ERROR: Marginal CDF not monotonic at v=" << v 
                       << " (" << cdf.marginal_cdf[v - 1] << " -> " << cdf.marginal_cdf[v] << ")" << std::endl;
             success = false;
             violations++;
             if (violations >= 10) {
-                std::cout << "  (stopping after 10 violations)" << std::endl;
+                std::cerr << "  (stopping after 10 violations)" << std::endl;
                 break;
             }
         }

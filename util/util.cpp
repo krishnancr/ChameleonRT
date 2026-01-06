@@ -180,19 +180,15 @@ HDRImage load_environment_map(const std::string& filename) {
             throw std::runtime_error(error_msg);
         }
         
-        std::cout << "  Loaded EXR: " << img.width << "x" << img.height << std::endl;
-        
         // Verify HDR data
         float max_value = 0.0f;
         for (int i = 0; i < img.width * img.height * 4; i++) {
             max_value = std::max(max_value, img.data[i]);
         }
-        std::cout << "  Max value: " << max_value 
-                  << (max_value > 1.0 ? " (HDR)" : " (LDR?)") << std::endl;
         
     } else if (ext == "jpg" || ext == "jpeg" || ext == "png") {
         // Fallback: Load LDR using stb_image and convert to float
-        std::cout << "  WARNING: Loading LDR image (" << ext 
+        std::cerr << "  WARNING: Loading LDR image (" << ext 
                   << ") - will have limited dynamic range for IBL" << std::endl;
         
         int channels;
@@ -215,9 +211,6 @@ HDRImage load_environment_map(const std::string& filename) {
         }
         
         stbi_image_free(ldr_data);
-        
-        std::cout << "  Loaded LDR (converted to float): " 
-                  << img.width << "x" << img.height << std::endl;
         
     } else {
         throw std::runtime_error("Unsupported environment map format: " + ext + 

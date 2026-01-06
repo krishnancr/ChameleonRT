@@ -11,11 +11,60 @@ This repository is a fork of Will Usher's [ChameleonRT](https://github.com/Twink
 **Original ChameleonRT:** An example path tracer supporting multiple ray tracing backends (Embree, Embree+SYCL, DXR, OptiX, Vulkan, Metal, OSPRay). This fork maintains compatibility with the original backends while adding Slang integration options for DXR and Vulkan.
 
 The project uses [tinyobjloader](https://github.com/syoyo/tinyobjloader) for OBJ files,
+[tinyexr](https://github.com/syoyo/tinyexr) for hdr enviornment lighting
 [tinygltf](https://github.com/syoyo/tinygltf) for glTF files, and optionally
 [pbrt-parser](https://github.com/ingowald/pbrt-parser) for PBRTv3 files.
 Example models (San Miguel, Sponza, Rungholt) are from Morgan McGuire's [Computer Graphics Data Archive](https://casual-effects.com/data/).
 
 [![San Miguel, Sponza and Rungholt](https://i.imgur.com/tKZYjzn.jpg)](https://i.imgur.com/pVhQK3j.jpg)
+
+## Features
+
+- ✅ **Physically-based path tracing** with Multiple Importance Sampling (MIS)
+- ✅ **Image-Based Lighting (IBL)** with importance sampling from HDR environment maps
+- ✅ **Emissive materials** - materials can emit light (area lights)
+- ✅ **Progressive accumulation** with smart firefly filtering for glossy surfaces
+- ✅ **Disney BRDF** (principled materials) with full PBR workflow
+- ✅ **Russian roulette** path termination for efficiency
+- ✅ **Texture support** for material parameters (albedo, roughness, metallic, etc.)
+- ⚠️  **Opaque materials only** - transparency and refraction not yet implemented
+
+## Rendering Pipeline
+
+For detailed visual diagrams of the path tracing pipeline, including MIS strategy and sample accumulation, see:
+
+**📊 [Rendering Pipeline Documentation](docs/Rendering_Pipeline.md)**
+
+The pipeline document includes:
+- High-level rendering loop overview
+- Detailed path tracing with Multiple Importance Sampling (MIS)
+- Sample accumulation and firefly clamping strategy
+- Convergence timeline and quality recommendations
+
+## Rendering Quality
+
+The path tracer uses progressive accumulation. Quality improves over time:
+
+## Known Limitations
+
+- **Opaque surfaces only** - No transparency, refraction, or glass materials
+- **No volumetric rendering** - Fog, smoke, and participating media not supported
+- **No subsurface scattering** - Skin, wax, and translucent materials render as opaque
+- **IBL format limitation** - Environment maps must be equirectangular/lat-long HDR (.exr format recommended)
+- **No light sampling optimization** - All lights evaluated per bounce (may be slow with 100+ lights)
+
+## Backend Status
+
+**⚡ Actively Maintained & Fully Featured:**
+- **Vulkan + Slang** - Primary backend, most tested (Linux + Windows)
+- **DXR + Slang** - Full feature support, less tested (Windows only)
+
+**⚠️ Deprecated / Potentially Broken:**
+- **Legacy backends** (Embree, OptiX, Metal, OSPRay) may have outdated shader code
+- Backend-specific HLSL/GLSL/Metal shaders in `backends/*/` are **out of sync** with current unified Slang shader (`unified_render.slang`)
+- These legacy backends may produce **incorrect lighting** or **missing features** (no IBL, no emissive materials, broken accumulation)
+
+**Recommendation:** Use **Vulkan** or **DXR** backends with Slang for accurate, feature-complete rendering. Legacy backends are kept for reference but not guaranteed to work correctly.
 
 ## Controls
 

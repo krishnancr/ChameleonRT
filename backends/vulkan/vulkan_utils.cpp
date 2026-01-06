@@ -344,7 +344,7 @@ void Device::select_physical_device()
     }
 
     if (vk_physical_device == VK_NULL_HANDLE) {
-        std::cout << "Failed to find RTX capable GPU\n";
+        std::cerr << "Failed to find RTX capable GPU\n";
         throw std::runtime_error("Failed to find KHR_ray_tracing capable GPU");
     }
 }
