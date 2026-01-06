@@ -31,6 +31,9 @@ struct Scene {
     uint32_t samples_per_pixel = 1;
     MaterialMode material_mode = MaterialMode::DEFAULT;
 
+    // Environment map (optional)
+    std::string environment_map_path;
+
     // Global buffers for GPU upload (matching shader structure EXACTLY)
     // Separate arrays to match shader layout (not merged Vertex struct)
     std::vector<glm::vec3> global_vertices;       // All vertex positions concatenated
@@ -68,7 +71,7 @@ struct Scene {
     // Compute scene bounding box from all instances and meshes
     Bounds compute_bounds() const;
 
-    Scene(const std::string &fname, MaterialMode material_mode);
+    Scene(const std::string &fname, MaterialMode material_mode, const std::string &env_map = "");
     Scene() = default;
 
     // Compute the unique number of triangles in the scene

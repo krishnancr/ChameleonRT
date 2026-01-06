@@ -10,7 +10,8 @@ add_library(util
     gltf_types.cpp
     flatten_gltf.cpp
     file_mapping.cpp
-    render_plugin.cpp)
+    render_plugin.cpp
+    environment_sampling.cpp)
 
 set_target_properties(util PROPERTIES
     CXX_STANDARD 14
@@ -39,8 +40,10 @@ endif()
 target_link_libraries(util PUBLIC
     SDL2::SDL2)
 
-install(IMPORTED_RUNTIME_ARTIFACTS SDL2::SDL2
-    DESTINATION bin)
+# Note: IMPORTED_RUNTIME_ARTIFACTS requires CMake 3.21+
+# Commented out for compatibility
+# install(IMPORTED_RUNTIME_ARTIFACTS SDL2::SDL2
+#     DESTINATION bin)
 
 crt_add_packaged_dependency(SDL2::SDL2)
 

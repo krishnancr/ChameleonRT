@@ -10,6 +10,7 @@
 #include "render_backend.h"
 #include "vulkan_utils.h"
 #include "vulkanrt_utils.h"
+#include "util.h"  // For HDRImage
 
 #ifdef USE_SLANG_COMPILER
 #include "slang_shader_compiler.h"
@@ -68,6 +69,15 @@ struct RenderVulkan : RenderBackend {
 
     std::vector<std::shared_ptr<vkrt::Texture2D>> textures;
     VkSampler sampler = VK_NULL_HANDLE;
+
+    // Environment map resources
+    std::shared_ptr<vkrt::Texture2D> env_map_texture;
+    VkSampler env_map_sampler = VK_NULL_HANDLE;
+    std::shared_ptr<vkrt::Buffer> env_marginal_cdf_buffer;
+    std::shared_ptr<vkrt::Buffer> env_conditional_cdf_buffer;
+    uint32_t env_width = 0;
+    uint32_t env_height = 0;
+    bool has_environment = false;
 
     VkCommandPool command_pool = VK_NULL_HANDLE;
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
@@ -139,4 +149,9 @@ private:
                              const void* data,
                              size_t size,
                              VkBufferUsageFlags usage);
+
+    // Environment map helpers
+    void load_environment_map(const std::string& path);
+    void upload_environment_map(const HDRImage& img);
+    void create_dummy_environment_map();  // Creates 1x1 black texture when no env map
 };

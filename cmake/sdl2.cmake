@@ -1,78 +1,47 @@
-# Auto-download SDL2 if not found in system
-include(FetchContent)
+# Find SDL2 - prefer system installation
+# On Ubuntu/Debian: sudo apt install libsdl2-dev
+# On Fedora/RHEL: sudo dnf install SDL2-devel
 
-# SDL2 version and download URLs
-set(SDL2_VERSION "2.30.9")
-
-if(WIN32)
-    set(SDL2_URL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-devel-${SDL2_VERSION}-VC.zip")
-    set(SDL2_HASH "SHA256=8c91d91e5bcb997d062ec2b553c53832ebf95654d4aa35e8c02a954d4ce752ae")
-elseif(APPLE)
-    set(SDL2_URL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-${SDL2_VERSION}.dmg")
-    set(SDL2_HASH "")  # Add hash if needed
-elseif(UNIX)
-    set(SDL2_URL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-devel-${SDL2_VERSION}-mingw.tar.gz")
-    set(SDL2_HASH "")  # Add hash if needed
+# Try pkg-config first (works well on Linux)
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(SDL2 QUIET sdl2)
 endif()
 
-# Try to find SDL2 first
-find_package(SDL2 CONFIG QUIET)
-
+# If not found via pkg-config, try CMake find_package
 if(NOT SDL2_FOUND)
-    message(STATUS "SDL2 not found in system, will auto-download SDL2 ${SDL2_VERSION}")
+    find_package(SDL2 CONFIG QUIET)
+endif()
+
+if(SDL2_FOUND)
+    # System SDL2 found
+    message(STATUS "SDL2: Using system installation (version ${SDL2_VERSION})")
     
-    FetchContent_Declare(
-        SDL2
-        URL ${SDL2_URL}
-        URL_HASH ${SDL2_HASH}
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    
-    FetchContent_MakeAvailable(SDL2)
-    
-    if(WIN32)
-        # Set SDL2 paths for Windows VC distribution
-        set(SDL2_INCLUDE_DIR "${sdl2_SOURCE_DIR}/include" CACHE PATH "SDL2 include directory")
-        
-        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-            set(SDL2_LIB_DIR "${sdl2_SOURCE_DIR}/lib/x64")
-        else()
-            set(SDL2_LIB_DIR "${sdl2_SOURCE_DIR}/lib/x86")
+    # Ensure SDL2::SDL2 target exists
+    if(NOT TARGET SDL2::SDL2)
+        add_library(SDL2::SDL2 INTERFACE IMPORTED)
+        if(SDL2_INCLUDE_DIRS)
+            set_target_properties(SDL2::SDL2 PROPERTIES
+                INTERFACE_INCLUDE_DIRECTORIES "${SDL2_INCLUDE_DIRS}")
         endif()
-        
-        # Create imported target
-        add_library(SDL2::SDL2 SHARED IMPORTED)
-        set_target_properties(SDL2::SDL2 PROPERTIES
-            IMPORTED_LOCATION "${SDL2_LIB_DIR}/SDL2.dll"
-            IMPORTED_IMPLIB "${SDL2_LIB_DIR}/SDL2.lib"
-            INTERFACE_INCLUDE_DIRECTORIES "${SDL2_INCLUDE_DIR}"
-        )
-        
-        add_library(SDL2::SDL2main STATIC IMPORTED)
-        set_target_properties(SDL2::SDL2main PROPERTIES
-            IMPORTED_LOCATION "${SDL2_LIB_DIR}/SDL2main.lib"
-            INTERFACE_INCLUDE_DIRECTORIES "${SDL2_INCLUDE_DIR}"
-        )
-        
-        # Store DLL path for copying to output directory
-        set(SDL2_DLL "${SDL2_LIB_DIR}/SDL2.dll" CACHE INTERNAL "SDL2 DLL path")
-        
-        message(STATUS "SDL2: Downloaded to ${sdl2_SOURCE_DIR}")
-        message(STATUS "SDL2: Include dir: ${SDL2_INCLUDE_DIR}")
-        message(STATUS "SDL2: Lib dir: ${SDL2_LIB_DIR}")
+        if(SDL2_LIBRARIES)
+            set_target_properties(SDL2::SDL2 PROPERTIES
+                INTERFACE_LINK_LIBRARIES "${SDL2_LIBRARIES}")
+        elseif(SDL2_LINK_LIBRARIES)
+            set_target_properties(SDL2::SDL2 PROPERTIES
+                INTERFACE_LINK_LIBRARIES "${SDL2_LINK_LIBRARIES}")
+        endif()
     endif()
-    
-    set(SDL2_FOUND TRUE CACHE BOOL "SDL2 found" FORCE)
+else()
+    message(WARNING "SDL2 not found. Please install:")
+    message(WARNING "  Ubuntu/Debian: sudo apt install libsdl2-dev")
+    message(WARNING "  Fedora/RHEL:   sudo dnf install SDL2-devel")
+    message(WARNING "  Arch:          sudo pacman -S sdl2")
+    message(FATAL_ERROR "SDL2 is required but not found.")
 endif()
 
 # Function to copy SDL2 DLL to target output directory (Windows only)
 function(copy_sdl2_dll TARGET_NAME)
-    if(WIN32 AND DEFINED SDL2_DLL)
-        add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${SDL2_DLL}"
-                "$<TARGET_FILE_DIR:${TARGET_NAME}>"
-            COMMENT "Copying SDL2.dll to output directory"
-        )
-    endif()
+    # No-op on Linux/macOS where SDL2 is system-installed
+    # On Windows with prebuilt SDL2, this would need to be implemented
 endfunction()

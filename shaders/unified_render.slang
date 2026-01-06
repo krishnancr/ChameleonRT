@@ -5,6 +5,7 @@ import modules.util;
 import modules.lcg_rng;
 import modules.disney_bsdf;
 import modules.lights;
+import modules.environment_sampling;
 
 // =============================================================================
 // BACKEND-SPECIFIC RESOURCE BINDINGS
@@ -30,12 +31,17 @@ import modules.lights;
 [[vk::binding(5, 0)]] StructuredBuffer<QuadLight> lights;
 [[vk::binding(7, 0)]] cbuffer SceneParams {
     uint num_lights;
+    uint env_map_width;
+    uint env_map_height;
 }
 [[vk::binding(10, 0)]] StructuredBuffer<float3> globalVertices;
 [[vk::binding(11, 0)]] StructuredBuffer<uint3> globalIndices;
 [[vk::binding(12, 0)]] StructuredBuffer<float3> globalNormals;
 [[vk::binding(13, 0)]] StructuredBuffer<float2> globalUVs;
 [[vk::binding(14, 0)]] StructuredBuffer<MeshDesc> meshDescs;
+[[vk::binding(15, 0)]] Sampler2D environment_map;  // Combined image sampler for env map
+[[vk::binding(16, 0)]] StructuredBuffer<float> env_marginal_cdf;  // Marginal CDF for env sampling
+[[vk::binding(17, 0)]] StructuredBuffer<float> env_conditional_cdf;  // Conditional CDFs for env sampling
 [[vk::binding(30, 0)]] Sampler2D textures[];
 [[vk::shader_record]] cbuffer HitGroupData { uint meshDescIndex; }
 #else
@@ -56,6 +62,8 @@ cbuffer ViewParams : register(b0) {
 }
 cbuffer SceneParams : register(b1) {
     uint num_lights;
+    uint env_map_width;
+    uint env_map_height;
 }
 StructuredBuffer<MaterialParams> material_params : register(t1);
 StructuredBuffer<QuadLight> lights : register(t2);
@@ -64,6 +72,9 @@ StructuredBuffer<uint3> globalIndices : register(t11, space0);
 StructuredBuffer<float3> globalNormals : register(t12, space0);
 StructuredBuffer<float2> globalUVs : register(t13, space0);
 StructuredBuffer<MeshDesc> meshDescs : register(t14, space0);
+Texture2D<float4> environment_map : register(t15, space0);
+StructuredBuffer<float> env_marginal_cdf : register(t16, space0);  // Marginal CDF for env sampling
+StructuredBuffer<float> env_conditional_cdf : register(t17, space0);  // Conditional CDFs for env sampling
 Texture2D textures[] : register(t30, space0);
 SamplerState tex_sampler : register(s0);
 cbuffer HitGroupData : register(b2, space0) { uint meshDescIndex; }
@@ -91,6 +102,10 @@ struct MeshDesc {
     uint pad;           // Padding to 32 bytes
 };
 
+// Firefly clamping threshold (luminance)
+// Values above this are clamped to preserve color but prevent outliers from glossy surfaces
+static const float FIREFLY_CLAMP_THRESHOLD = 20.0f;
+
 // MaterialParams structure for material properties (matches HLSL layout)
 struct MaterialParams {
     float3 base_color;
@@ -109,6 +124,9 @@ struct MaterialParams {
     float ior;
     float specular_transmission;
     float2 pad;
+
+    float3 emission;
+    float pad2;
 };
 
 // Primary ray payload (matches HLSL HitInfo structure)
@@ -171,6 +189,9 @@ MaterialParams evaluate_material_at_surface(uint mat_id, float2 texcoord)
     evaluated.ior = sample_scalar_texture_param(source.ior, texcoord);
     evaluated.specular_transmission = sample_scalar_texture_param(source.specular_transmission, texcoord);
     
+    // Copy emission (no texture support for now)
+    evaluated.emission = source.emission;
+    
     return evaluated;
 }
 
@@ -213,6 +234,7 @@ void RayGen()
         float3 path_throughput = float3(1.0f, 1.0f, 1.0f);
         float3 sample_illum = float3(0.0f);  // Accumulate illumination for this sample
         DisneyMaterial mat;
+        float prev_bsdf_pdf = 0.0f;  // BRDF PDF from previous bounce (for environment MIS)
     
     do {
         // Setup ray
@@ -242,12 +264,47 @@ void RayGen()
         ++ray_count;
 #endif
         
-        // Miss? Add sky color and terminate
+        // Miss? Handle environment/sky and terminate
         if (payload.color_dist.w <= 0.0f) {
-            sample_illum += path_throughput * payload.color_dist.rgb;  // Sky color from Miss shader
+            // Get environment radiance from miss shader
+            float3 env_radiance = payload.color_dist.rgb;
+            
+            // ===== STEP 2.2: MIS for BRDF samples that hit environment =====
+            // Check if environment map is loaded (width > 1 means real env map, not dummy 1x1)
+            uint env_width, env_height;
+            environment_map.GetDimensions(env_width, env_height);
+            
+            if (bounce > 0 && env_width > 1 && prev_bsdf_pdf > EPSILON) {
+                // This ray was sampled from BRDF, apply MIS weight
+                // Importance-sampled environment PDF (varies per location)
+                // Convert direction to UV for PDF evaluation
+                float3 dir = normalize(ray_dir);
+                float env_u = (1.0f + atan2(dir.x, -dir.z) * M_1_PI) * 0.5f;
+                float env_v = acos(dir.y) * M_1_PI;
+                
+                float env_pdf = environment_pdf(
+                    env_u, env_v,
+                    env_marginal_cdf, env_conditional_cdf,
+                    env_map_width, env_map_height
+                );
+                
+                // MIS weight: BRDF PDF vs importance-sampled environment PDF
+                float mis_weight = power_heuristic(1.0f, prev_bsdf_pdf, 1.0f, env_pdf);
+                
+                // Add contribution with firefly clamping to prevent extreme outliers
+                float3 contribution = path_throughput * env_radiance * mis_weight;
+                contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
+                sample_illum += contribution;
+            } else {
+                // Primary ray or no environment map - add full contribution
+                float3 contribution = path_throughput * env_radiance;
+                contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
+                sample_illum += contribution;
+            }
+            
             // Capture first-hit data for OIDN (sky color as albedo, no normal for miss)
             if (bounce == 0) {
-                first_albedo += payload.color_dist.rgb;
+                first_albedo += env_radiance;
                 // first_normal stays 0 for sky miss
             }
             break;
@@ -263,6 +320,11 @@ void RayGen()
         // Evaluate material at surface
         MaterialParams mat_params = evaluate_material_at_surface(material_id, uv);
         
+        // Add emissive contribution if surface emits light
+        if (any(mat_params.emission > 0.0f)) {
+            sample_illum += path_throughput * mat_params.emission;
+        }
+        
         // Create Disney material
         mat.base_color = mat_params.base_color;
         mat.metallic = mat_params.metallic;
@@ -276,6 +338,7 @@ void RayGen()
         mat.clearcoat_gloss = mat_params.clearcoat_gloss;
         mat.ior = mat_params.ior;
         mat.specular_transmission = mat_params.specular_transmission;
+        mat.emission = mat_params.emission;
         
         // Flip normal to face camera if opaque
         if (mat.specular_transmission == 0.0f && dot(w_o, normal) < 0.0f) {
@@ -297,6 +360,9 @@ void RayGen()
         float3 illum = float3(0.0f);
         
         // Iterate through all lights
+        // NOTE: Future optimization - for scenes with many lights (>10), consider
+        // randomly sampling a subset with proper weighting instead of iterating all.
+        // Current implementation is correct but may be slow with 100+ lights.
         for (uint light_idx = 0; light_idx < num_lights; ++light_idx) {
             QuadLight light = lights[light_idx];
             
@@ -343,7 +409,98 @@ void RayGen()
             if (light_pdf >= EPSILON && bsdf_pdf >= EPSILON && shadow_hit.color_dist.w < 0) {
                 float3 bsdf = disney_brdf(mat, v_z, w_o, light_dir, v_x, v_y);
                 float w = power_heuristic(1.0f, light_pdf, 1.0f, bsdf_pdf);
-                illum = bsdf * light.emission.rgb * abs(dot(light_dir, v_z)) * w / light_pdf;
+                float3 contribution = bsdf * light.emission.rgb * abs(dot(light_dir, v_z)) * w / light_pdf;
+                contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
+                illum += contribution;
+            }
+        }
+        
+        // ===== STEP 2.1: Direct lighting from environment map =====
+        // Check if environment map is loaded (width > 1 means real env map, not dummy 1x1)
+        uint env_width, env_height;
+        environment_map.GetDimensions(env_width, env_height);
+        
+        if (env_width > 1) {
+            // Step 1: Importance sample environment map using CDF
+            float random_u = lcg_randomf(rng);
+            float random_v = lcg_randomf(rng);
+            
+            EnvSample env_sample = sample_environment_map(
+                random_u, random_v,
+                env_marginal_cdf, env_conditional_cdf,
+                env_map_width, env_map_height
+            );
+            
+            float env_u = env_sample.u;  // Use importance-sampled UV coordinates
+            float env_v = env_sample.v;
+            
+            // Step 2: Convert UV to direction (spherical lat-long mapping)
+            float theta = env_v * M_PI;           // v -> [0, π]
+            float phi = env_u * 2.0f * M_PI - M_PI; // u -> [-π, π]
+            
+            float sin_theta = sin(theta);
+            float cos_theta = cos(theta);
+            float sin_phi = sin(phi);
+            float cos_phi = cos(phi);
+            
+            // Direction in world space (Y-up coordinate system)
+            float3 wi_env = float3(sin_theta * sin_phi, cos_theta, -sin_theta * cos_phi);
+            
+            // Step 3: Sample environment map at this UV
+            #ifdef VULKAN
+            float3 env_radiance = environment_map.SampleLevel(float2(env_u, env_v), 0).rgb;
+            #else
+            float3 env_radiance = environment_map.SampleLevel(tex_sampler, float2(env_u, env_v), 0).rgb;
+            #endif
+            
+            // Step 4: Trace shadow ray to check visibility (ray to infinity)
+            RayDesc env_shadow_ray;
+            env_shadow_ray.Origin = hit_p + v_z * EPSILON;  // Offset to avoid self-intersection
+            env_shadow_ray.Direction = wi_env;
+            env_shadow_ray.TMin = 0.0f;
+            env_shadow_ray.TMax = 1e20f;  // Ray to infinity
+            
+            Payload env_shadow_payload;
+            env_shadow_payload.color_dist = float4(0.0f, 0.0f, 0.0f, 1.0f);  // w=1 means hit
+            env_shadow_payload.normal = float4(0.0f, 0.0f, 0.0f, 0.0f);
+            
+            TraceRay(
+                scene,
+                RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                0xFF,
+                0,
+                1,
+                1,  // Shadow miss shader index
+                env_shadow_ray,
+                env_shadow_payload
+            );
+            
+#ifdef REPORT_RAY_STATS
+            ++ray_count;
+#endif
+            
+            // Step 5: If ray missed all geometry (w < 0), it hit the environment
+            if (env_shadow_payload.color_dist.w < 0.0f) {
+                // Calculate BSDF for this direction
+                float3 env_bsdf = disney_brdf(mat, v_z, w_o, wi_env, v_x, v_y);
+                float env_bsdf_pdf = disney_pdf(mat, v_z, w_o, wi_env, v_x, v_y);
+                
+                // Importance-sampled PDF (varies per location based on luminance)
+                float env_pdf = env_sample.pdf;
+                
+                // Clamp PDF to prevent fireflies from division by near-zero
+                env_pdf = max(env_pdf, 1e-6f);
+                
+                // MIS weight (power heuristic, same as quad lights)
+                if (env_bsdf_pdf >= EPSILON) {
+                    float env_mis_weight = power_heuristic(1.0f, env_pdf, 1.0f, env_bsdf_pdf);
+                    
+                    // Add contribution with firefly clamping to prevent glossy fireflies
+                    float env_cos_term = abs(dot(wi_env, v_z));
+                    float3 contribution = env_bsdf * env_radiance * env_cos_term * env_mis_weight / env_pdf;
+                    contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
+                    illum += contribution;
+                }
             }
         }
         
@@ -395,7 +552,9 @@ void RayGen()
 #endif
                     
                     if (shadow_hit.color_dist.w < 0) {
-                        sample_illum += path_throughput * bsdf * light.emission.rgb * abs(dot(w_i, v_z)) * w / pdf;
+                        float3 contribution = path_throughput * bsdf * light.emission.rgb * abs(dot(w_i, v_z)) * w / pdf;
+                        contribution = clamp_fireflies(contribution, FIREFLY_CLAMP_THRESHOLD);
+                        sample_illum += contribution;
                     }
                 }
             }
@@ -405,9 +564,15 @@ void RayGen()
         bool terminate = (pdf <= 0.0f) || all(bsdf == float3(0.0f));
         
         if (!terminate) {
+            // Clamp PDF to prevent extreme throughput values
+            pdf = max(pdf, 1e-6f);
+            
             // Only compute throughput if we're continuing (pdf is guaranteed > 0 here)
             float cos_theta = abs(dot(w_i, v_z));
             path_throughput *= (bsdf * cos_theta) / pdf;
+            
+            // Store BRDF PDF for environment MIS on next bounce miss
+            prev_bsdf_pdf = pdf;
             
             // Update ray for next bounce
             ray_origin = hit_p;
@@ -447,19 +612,23 @@ void RayGen()
     // Accumulate across frames for temporal convergence
     uint pixel_idx = pixel.y * uint(dims.x) + pixel.x;
     
+    // Track total samples across all frames (Option 2: highest quality + best performance)
+    uint total_samples = frame_id * samples_per_pixel;
+    uint new_total = total_samples + samples_per_pixel;
+    
     // Accumulate color
     float4 accum_color = accum_buffer[pixel_idx].color;
-    accum_color = (float4(illum, 1.0) + frame_id * accum_color) / (frame_id + 1);
+    accum_color = (accum_color * float(total_samples) + float4(illum, 1.0) * float(samples_per_pixel)) / float(new_total);
     accum_buffer[pixel_idx].color = accum_color;
     
     // Accumulate albedo
     float4 accum_albedo = accum_buffer[pixel_idx].albedo;
-    accum_albedo = (float4(first_albedo, 1.0) + frame_id * accum_albedo) / (frame_id + 1);
+    accum_albedo = (accum_albedo * float(total_samples) + float4(first_albedo, 1.0) * float(samples_per_pixel)) / float(new_total);
     accum_buffer[pixel_idx].albedo = accum_albedo;
     
     // Accumulate normal
     float4 accum_normal = accum_buffer[pixel_idx].normal;
-    accum_normal = (float4(first_normal, 1.0) + frame_id * accum_normal) / (frame_id + 1);
+    accum_normal = (accum_normal * float(total_samples) + float4(first_normal, 1.0) * float(samples_per_pixel)) / float(new_total);
     accum_buffer[pixel_idx].normal = accum_normal;
     
     // ===== DISPLAY OUTPUT =====
@@ -487,18 +656,34 @@ void Miss(inout Payload payload)
 {
     payload.color_dist.w = -1.0f;  // Indicates miss
     
-    // Checkered sky pattern (matching HLSL/GLSL)
-    float3 dir = WorldRayDirection();
+    float3 dir = normalize(WorldRayDirection());
+    
+    // Convert direction to UV coordinates (lat-long mapping)
     float u = (1.0f + atan2(dir.x, -dir.z) * M_1_PI) * 0.5f;
     float v = acos(dir.y) * M_1_PI;
     
-    int check_x = int(u * 10.0f);
-    int check_y = int(v * 10.0f);
+    // Check if environment map is available (width > 1 means real env map, not dummy 1x1)
+    uint env_width, env_height;
+    environment_map.GetDimensions(env_width, env_height);
     
-    if (dir.y > -0.1f && (check_x + check_y) % 2 == 0) {
-        payload.color_dist.rgb = float3(0.5f, 0.5f, 0.5f);
+    if (env_width > 1) {
+        // Sample environment map
+        #ifdef VULKAN
+        float4 env_color = environment_map.SampleLevel(float2(u, v), 0);
+        #else
+        float4 env_color = environment_map.SampleLevel(tex_sampler, float2(u, v), 0);
+        #endif
+        payload.color_dist.rgb = env_color.rgb;
     } else {
-        payload.color_dist.rgb = float3(0.1f, 0.1f, 0.1f);
+        // Fallback: checkered sky pattern
+        int check_x = int(u * 10.0f);
+        int check_y = int(v * 10.0f);
+        
+        if (dir.y > -0.1f && (check_x + check_y) % 2 == 0) {
+            payload.color_dist.rgb = float3(0.5f, 0.5f, 0.5f);
+        } else {
+            payload.color_dist.rgb = float3(0.1f, 0.1f, 0.1f);
+        }
     }
 }
 
@@ -520,6 +705,22 @@ void ClosestHit(
     float3 vb = globalVertices[NonUniformResourceIndex(idx.y)];
     float3 vc = globalVertices[NonUniformResourceIndex(idx.z)];
     float3 ng = normalize(cross(vb - va, vc - va));
+    
+    // Interpolate vertex normals if available, otherwise use geometric normal
+    float3 normal = ng;
+    if (mesh.num_normals > 0) {
+        uint3 local_vertex_idx = idx - uint3(mesh.vbOffset, mesh.vbOffset, mesh.vbOffset);
+        float3 na = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.x)];
+        float3 nb = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.y)];
+        float3 nc = globalNormals[NonUniformResourceIndex(mesh.normalOffset + local_vertex_idx.z)];
+        
+        // Barycentric interpolation of vertex normals
+        normal = normalize(
+            (1.f - bary.barycentrics.x - bary.barycentrics.y) * na
+            + bary.barycentrics.x * nb 
+            + bary.barycentrics.y * nc
+        );
+    }
 
     // Convert global vertex indices to local indices for UV lookup
     float2 uv = float2(0, 0);
@@ -534,7 +735,7 @@ void ClosestHit(
     }
 
     payload.color_dist = float4(uv, 0, RayTCurrent());
-    payload.normal = float4(ng, mesh.material_id);
+    payload.normal = float4(normal, mesh.material_id);
 }
 // ========== Shadow Miss Shader ==========
 

@@ -63,6 +63,7 @@ if(ENABLE_SLANG)
     set_target_properties(slang_compiler_util PROPERTIES
         CXX_STANDARD 17
         CXX_STANDARD_REQUIRED ON
+        POSITION_INDEPENDENT_CODE ON
     )
     
     message(STATUS "Slang shader compiler support enabled")
@@ -122,6 +123,7 @@ if(ENABLE_SLANG)
         modules/lcg_rng.slang
         modules/disney_bsdf.slang
         modules/lights.slang
+        modules/environment_sampling.slang
     )
     
     # Create shaders directory in output
@@ -172,4 +174,3 @@ endif()
 
 install(TARGETS chameleonrt
         RUNTIME DESTINATION bin)
-

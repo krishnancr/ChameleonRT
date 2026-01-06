@@ -6,6 +6,7 @@
 #include "dx12_utils.h"
 #include "dxr_utils.h"
 #include "render_backend.h"
+#include "util.h"
 
 #ifdef ENABLE_OIDN
 #include <OpenImageDenoise/oidn.hpp>
@@ -47,6 +48,14 @@ struct RenderDXR : RenderBackend {
     dxr::Texture2D render_target, ray_stats;
     dxr::Buffer accum_buffer;
     std::vector<dxr::Texture2D> textures;
+
+    // Environment map resources
+    dxr::Texture2D env_map_texture;
+    dxr::Buffer env_marginal_cdf_buffer;
+    dxr::Buffer env_conditional_cdf_buffer;
+    uint32_t env_width = 0;
+    uint32_t env_height = 0;
+    bool has_environment = false;
 
 #ifdef ENABLE_OIDN
     dxr::Buffer denoise_buffer;
@@ -125,4 +134,8 @@ private:
     void record_command_lists();
 
     void sync_gpu();
+
+    // Environment map helpers
+    void load_environment_map(const std::string& path);
+    void upload_environment_map(const HDRImage& img);
 };

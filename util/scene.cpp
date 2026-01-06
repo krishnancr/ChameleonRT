@@ -46,9 +46,13 @@ bool operator==(const glm::uvec3 &a, const glm::uvec3 &b)
     return a.x == b.x && a.y == b.y && a.z == b.z;
 }
 
-Scene::Scene(const std::string &fname, MaterialMode material_mode)
-    : material_mode(material_mode)
+Scene::Scene(const std::string &fname, MaterialMode material_mode, const std::string &env_map)
+    : material_mode(material_mode), environment_map_path(env_map)
 {
+    if (!environment_map_path.empty()) {
+        std::cout << "Environment map set: " << environment_map_path << "\n";
+    }
+    
     const std::string ext = get_file_extension(fname);
     if (ext == "obj") {
         load_obj(fname);
@@ -193,11 +197,31 @@ void Scene::load_obj(const std::string &file)
         for (const auto &m : obj_materials) {
             DisneyMaterial d;
             d.base_color = glm::vec3(m.diffuse[0], m.diffuse[1], m.diffuse[2]);
-            d.specular = glm::clamp(m.shininess / 500.f, 0.f, 1.f);
-            d.roughness = glm::clamp(1.f - d.specular, 0.f, 1.f);
+            
+            // Convert Phong shininess (Ns) to Disney roughness
+            // Phong: high Ns = sharp specular (Ns typically 0-1000)
+            // Disney: low roughness = sharp specular (roughness 0-1)
+            // Approximate conversion: roughness ≈ sqrt(2 / (Ns + 2))
+            // For common values: Ns=40 → roughness≈0.22, Ns=400 → roughness≈0.07
+            if (m.shininess > 0.0f) {
+                d.roughness = glm::clamp(std::sqrt(2.0f / (m.shininess + 2.0f)), 0.01f, 1.0f);
+            } else {
+                d.roughness = 1.0f;  // Fully rough/diffuse
+            }
+            
+            // Specular intensity from Ks (specular color magnitude)
+            float ks_intensity = (m.specular[0] + m.specular[1] + m.specular[2]) / 3.0f;
+            d.specular = glm::clamp(ks_intensity, 0.0f, 1.0f);
+            
+            // Metallic: OBJ doesn't have this, keep at 0 (dielectric)
+            d.metallic = 0.0f;
+            
             // Note: need to debug the transmissive materials
             d.specular_transmission = 0.f;
             // d.specular_transmission = glm::clamp(1.f - m.dissolve, 0.f, 1.f);
+
+            // Emission (Ke)
+            d.emission = glm::vec3(m.emission[0], m.emission[1], m.emission[2]);
 
             if (!m.diffuse_texname.empty()) {
                 std::string path = m.diffuse_texname;
@@ -217,16 +241,18 @@ void Scene::load_obj(const std::string &file)
 
     validate_materials();
 
-    // OBJ will not have any lights in it, so just generate one
-    std::cout << "Generating light for OBJ scene\n";
-    QuadLight light;
-    light.emission = glm::vec4(20.f);
-    light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
-    light.position = -10.f * light.normal;
-    ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
-    light.width = 5.f;
-    light.height = 5.f;
-    lights.push_back(light);
+    // Note: Backend requires at least one light for buffer allocation
+    if (lights.empty()) {
+        std::cout << "No lights in scene, adding dummy light (emissive materials/IBL provide actual lighting)\n";
+        QuadLight light;
+        light.emission = glm::vec4(0.f);  // Black/disabled light
+        // light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
+        // light.position = -10.f * light.normal;
+        // ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
+        // light.width = 5.f;
+        // light.height = 5.f;
+        lights.push_back(light);
+    }
 }
 
 void Scene::load_gltf(const std::string &fname)
@@ -403,17 +429,19 @@ void Scene::load_gltf(const std::string &fname)
 
     validate_materials();
 
-    // Does GLTF have lights in the file? If one is missing we should generate one,
-    // otherwise we can load them
-    std::cout << "Generating light for GLTF scene\n";
-    QuadLight light;
-    light.emission = glm::vec4(20.f);
-    light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
-    light.position = -10.f * light.normal;
-    ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
-    light.width = 5.f;
-    light.height = 5.f;
-    lights.push_back(light);
+    // GLTF doesn't have lights in the file, generate a dummy light if needed
+    // Note: Backend requires at least one light for buffer allocation
+    if (lights.empty()) {
+        std::cout << "No lights in scene, adding dummy light (emissive materials/IBL provide actual lighting)\n";
+        QuadLight light;
+        light.emission = glm::vec4(0.f);  // Black/disabled light
+        light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
+        light.position = -10.f * light.normal;
+        ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
+        light.width = 5.f;
+        light.height = 5.f;
+        lights.push_back(light);
+    }
 }
 
 void Scene::load_crts(const std::string &file)
@@ -784,15 +812,20 @@ void Scene::load_pbrt(const std::string &file)
 
     validate_materials();
 
-    std::cout << "Generating light for PBRT scene, TODO Will: Load them from the file\n";
-    QuadLight light;
-    light.emission = glm::vec4(20.f);
-    light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
-    light.position = -10.f * light.normal;
-    ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
-    light.width = 5.f;
-    light.height = 5.f;
-    lights.push_back(light);
+    // TODO: Load lights from PBRT file when parser supports it
+    // For now, only generate a dummy light if no lights exist
+    // Note: Backend requires at least one light for buffer allocation
+    if (lights.empty()) {
+        std::cout << "No lights in scene, adding dummy light (emissive materials/IBL provide actual lighting)\n";
+        QuadLight light;
+        light.emission = glm::vec4(0.f);  // Black/disabled light
+        light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
+        light.position = -10.f * light.normal;
+        ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
+        light.width = 5.f;
+        light.height = 5.f;
+        lights.push_back(light);
+    }
 }
 
 uint32_t Scene::load_pbrt_materials(

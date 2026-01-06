@@ -1,4 +1,5 @@
 #include "render_vulkan.h"
+#include "environment_sampling.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -79,6 +80,9 @@ RenderVulkan::~RenderVulkan()
 {
     vkDestroyQueryPool(device->logical_device(), timing_query_pool, nullptr);
     vkDestroySampler(device->logical_device(), sampler, nullptr);
+    if (env_map_sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(device->logical_device(), env_map_sampler, nullptr);
+    }
     vkDestroyCommandPool(device->logical_device(), command_pool, nullptr);
     vkDestroyCommandPool(device->logical_device(), render_cmd_pool, nullptr);
     vkDestroyPipelineLayout(device->logical_device(), pipeline_layout, nullptr);
@@ -796,14 +800,16 @@ void RenderVulkan::set_scene(const Scene &scene)
     }
 
 #ifdef USE_SLANG_COMPILER
-    // Create scene params buffer (contains num_lights for Slang shader)
-    // Slang path uses descriptor binding 7 instead of SBT for num_lights
+    // Create scene params buffer (contains num_lights, env_width, env_height for Slang shader)
+    // Slang path uses descriptor binding 7 instead of SBT for scene params
     scene_params = vkrt::Buffer::host(
-        *device, sizeof(uint32_t), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        *device, 3 * sizeof(uint32_t), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     {
         void *map = scene_params->map();
         uint32_t num_lights = static_cast<uint32_t>(scene.lights.size());
         std::memcpy(map, &num_lights, sizeof(uint32_t));
+        std::memcpy(static_cast<uint8_t*>(map) + sizeof(uint32_t), &env_width, sizeof(uint32_t));
+        std::memcpy(static_cast<uint8_t*>(map) + 2 * sizeof(uint32_t), &env_height, sizeof(uint32_t));
         scene_params->unmap();
     }
 
@@ -923,6 +929,14 @@ void RenderVulkan::set_scene(const Scene &scene)
             scene.mesh_descriptors.size() * sizeof(MeshDesc),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
         );
+    }
+
+    // Load environment map if specified, otherwise create dummy
+    if (!scene.environment_map_path.empty()) {
+        load_environment_map(scene.environment_map_path);
+    } else {
+        // Create dummy 1x1 black environment map to keep binding 15 valid
+        create_dummy_environment_map();
     }
 
     build_raytracing_pipeline();
@@ -1066,6 +1080,14 @@ void RenderVulkan::build_raytracing_pipeline()
                 13, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
             .add_binding(
                 14, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+            // Environment map at binding 15
+            .add_binding(
+                15, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_MISS_BIT_KHR)
+            // Environment CDF buffers at binding 16-17
+            .add_binding(
+                16, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_MISS_BIT_KHR)
+            .add_binding(
+                17, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_MISS_BIT_KHR)
             // Textures at binding 30 (single descriptor set architecture)
             .add_binding(
                 30,
@@ -1278,9 +1300,9 @@ void RenderVulkan::build_shader_descriptor_table()
 #else
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},  // ViewParams only (GLSL uses SBT)
 #endif
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},  // 2 existing + 5 global buffers
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9},  // 2 existing + 5 global buffers + 2 CDF buffers
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             std::max(uint32_t(textures.size()), uint32_t(1))}}; // Moved from Set 1
+                             std::max(uint32_t(textures.size()), uint32_t(1)) + 1}};  // +1 for environment map at binding 15
 
     VkDescriptorPoolCreateInfo pool_create_info = {};
     pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1429,6 +1451,63 @@ void RenderVulkan::build_shader_descriptor_table()
         mesh_write.pBufferInfo = &mesh_info;
         
         vkUpdateDescriptorSets(device->logical_device(), 1, &mesh_write, 0, nullptr);
+    }
+
+    // Environment map (binding 15) - always write since we guarantee texture exists
+    if (env_map_texture && env_map_sampler) {
+        VkDescriptorImageInfo env_image_info = {};
+        env_image_info.sampler = env_map_sampler;
+        env_image_info.imageView = env_map_texture->view_handle();
+        env_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        
+        VkWriteDescriptorSet env_write = {};
+        env_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        env_write.dstSet = desc_set;
+        env_write.dstBinding = 15;
+        env_write.dstArrayElement = 0;
+        env_write.descriptorCount = 1;
+        env_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        env_write.pImageInfo = &env_image_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &env_write, 0, nullptr);
+    }
+
+    // Environment marginal CDF buffer (binding 16)
+    if (env_marginal_cdf_buffer) {
+        VkDescriptorBufferInfo marginal_info = {};
+        marginal_info.buffer = env_marginal_cdf_buffer->handle();
+        marginal_info.offset = 0;
+        marginal_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet marginal_write = {};
+        marginal_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        marginal_write.dstSet = desc_set;
+        marginal_write.dstBinding = 16;
+        marginal_write.dstArrayElement = 0;
+        marginal_write.descriptorCount = 1;
+        marginal_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        marginal_write.pBufferInfo = &marginal_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &marginal_write, 0, nullptr);
+    }
+
+    // Environment conditional CDF buffer (binding 17)
+    if (env_conditional_cdf_buffer) {
+        VkDescriptorBufferInfo conditional_info = {};
+        conditional_info.buffer = env_conditional_cdf_buffer->handle();
+        conditional_info.offset = 0;
+        conditional_info.range = VK_WHOLE_SIZE;
+        
+        VkWriteDescriptorSet conditional_write = {};
+        conditional_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        conditional_write.dstSet = desc_set;
+        conditional_write.dstBinding = 17;
+        conditional_write.dstArrayElement = 0;
+        conditional_write.descriptorCount = 1;
+        conditional_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        conditional_write.pBufferInfo = &conditional_info;
+        
+        vkUpdateDescriptorSets(device->logical_device(), 1, &conditional_write, 0, nullptr);
     }
 
 #ifdef ENABLE_OIDN
@@ -1757,4 +1836,340 @@ void RenderVulkan::upload_global_buffer(std::shared_ptr<vkrt::Buffer>& gpu_buf,
     vkResetCommandPool(device->logical_device(),
                       command_pool,
                       VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+}
+
+void RenderVulkan::load_environment_map(const std::string& path) {
+    try {
+        // Load from file using util function
+        HDRImage img = ::load_environment_map(path);
+        
+        // Upload to GPU
+        upload_environment_map(img);
+        
+        has_environment = true;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to load environment map: " << e.what() << std::endl;
+        has_environment = false;
+        // Create dummy environment map to keep descriptor valid
+        create_dummy_environment_map();
+    }
+}
+
+void RenderVulkan::upload_environment_map(const HDRImage& img) {
+    // Store dimensions
+    env_width = img.width;
+    env_height = img.height;
+    
+    // Build CDF for importance sampling
+    envsampling::EnvironmentCDF cdf = envsampling::build_environment_cdf(
+        img.data, img.width, img.height);
+    
+    // Create GPU texture for environment map (RGBA32F format)
+    env_map_texture = vkrt::Texture2D::device(
+        *device,
+        glm::uvec2(img.width, img.height),
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+    );
+    
+    // Create upload buffer for texture
+    const size_t upload_size = img.width * img.height * 4 * sizeof(float);
+    auto upload_buf = vkrt::Buffer::host(
+        *device,
+        upload_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    // Copy data to upload buffer
+    void* mapped = upload_buf->map();
+    std::memcpy(mapped, img.data, upload_size);
+    upload_buf->unmap();
+    
+    // Create CDF buffers
+    // Marginal CDF buffer
+    const size_t marginal_size = cdf.marginal_cdf.size() * sizeof(float);
+    env_marginal_cdf_buffer = vkrt::Buffer::device(
+        *device,
+        marginal_size,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+    );
+    
+    auto marginal_upload = vkrt::Buffer::host(
+        *device,
+        marginal_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    void* marginal_map = marginal_upload->map();
+    std::memcpy(marginal_map, cdf.marginal_cdf.data(), marginal_size);
+    marginal_upload->unmap();
+    
+    // Conditional CDF buffer (flattened 2D array)
+    std::vector<float> conditional_flat;
+    conditional_flat.reserve(img.width * img.height);
+    for (int v = 0; v < img.height; ++v) {
+        conditional_flat.insert(conditional_flat.end(),
+                               cdf.conditional_cdfs[v].begin(),
+                               cdf.conditional_cdfs[v].end());
+    }
+    
+    const size_t conditional_size = conditional_flat.size() * sizeof(float);
+    env_conditional_cdf_buffer = vkrt::Buffer::device(
+        *device,
+        conditional_size,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+    );
+    
+    auto conditional_upload = vkrt::Buffer::host(
+        *device,
+        conditional_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    void* conditional_map = conditional_upload->map();
+    std::memcpy(conditional_map, conditional_flat.data(), conditional_size);
+    conditional_upload->unmap();
+    
+    // Record commands to upload everything
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
+    
+    // Upload texture
+    // Transition image to transfer destination layout
+    VkImageMemoryBarrier img_barrier = {};
+    img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    img_barrier.image = env_map_texture->image_handle();
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    img_barrier.srcAccessMask = 0;
+    img_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    img_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    img_barrier.subresourceRange.baseMipLevel = 0;
+    img_barrier.subresourceRange.levelCount = 1;
+    img_barrier.subresourceRange.baseArrayLayer = 0;
+    img_barrier.subresourceRange.layerCount = 1;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &img_barrier);
+    
+    // Copy buffer to image
+    VkBufferImageCopy copy_region = {};
+    copy_region.bufferOffset = 0;
+    copy_region.bufferRowLength = 0;    // Tightly packed
+    copy_region.bufferImageHeight = 0;  // Tightly packed
+    copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy_region.imageSubresource.mipLevel = 0;
+    copy_region.imageSubresource.baseArrayLayer = 0;
+    copy_region.imageSubresource.layerCount = 1;
+    copy_region.imageOffset = {0, 0, 0};
+    copy_region.imageExtent = {static_cast<uint32_t>(img.width), 
+                               static_cast<uint32_t>(img.height), 1};
+    
+    vkCmdCopyBufferToImage(command_buffer,
+                           upload_buf->handle(),
+                           env_map_texture->image_handle(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1,
+                           &copy_region);
+    
+    // Transition to shader read optimal layout
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    img_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    img_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &img_barrier);
+    
+    // Upload CDF buffers
+    VkBufferCopy marginal_copy = {};
+    marginal_copy.size = marginal_size;
+    vkCmdCopyBuffer(command_buffer,
+                    marginal_upload->handle(),
+                    env_marginal_cdf_buffer->handle(),
+                    1, &marginal_copy);
+    
+    VkBufferCopy conditional_copy = {};
+    conditional_copy.size = conditional_size;
+    vkCmdCopyBuffer(command_buffer,
+                    conditional_upload->handle(),
+                    env_conditional_cdf_buffer->handle(),
+                    1, &conditional_copy);
+    
+    // Buffer barriers to ensure transfers complete before shader access
+    VkBufferMemoryBarrier buffer_barriers[2] = {};
+    buffer_barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    buffer_barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    buffer_barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    buffer_barriers[0].buffer = env_marginal_cdf_buffer->handle();
+    buffer_barriers[0].size = VK_WHOLE_SIZE;
+    
+    buffer_barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    buffer_barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    buffer_barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    buffer_barriers[1].buffer = env_conditional_cdf_buffer->handle();
+    buffer_barriers[1].size = VK_WHOLE_SIZE;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         0,
+                         0, nullptr,
+                         2, buffer_barriers,
+                         0, nullptr);
+    
+    CHECK_VULKAN(vkEndCommandBuffer(command_buffer));
+    
+    // Submit and wait for completion
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+    CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+    
+    vkResetCommandPool(device->logical_device(),
+                       command_pool,
+                       VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+    
+    // Create sampler for environment map with appropriate settings
+    if (env_map_sampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo sampler_info = {};
+        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = VK_FILTER_LINEAR;
+        sampler_info.minFilter = VK_FILTER_LINEAR;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;   // Wrap horizontally (360°)
+        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;  // Clamp at poles
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.minLod = 0;
+        sampler_info.maxLod = 0;
+        
+        CHECK_VULKAN(vkCreateSampler(device->logical_device(), &sampler_info, 
+                                     nullptr, &env_map_sampler));
+    }
+}
+
+void RenderVulkan::create_dummy_environment_map() {
+    // Create a 1x1 black texture to use when no environment map is loaded
+    // This ensures binding 15 always has a valid descriptor
+    env_map_texture = vkrt::Texture2D::device(
+        *device,
+        glm::uvec2(1, 1),
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+    );
+    
+    // Create upload buffer with black color (all zeros)
+    const size_t upload_size = 1 * 1 * 4 * sizeof(float);
+    auto upload_buf = vkrt::Buffer::host(
+        *device,
+        upload_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    );
+    
+    // Zero out the buffer (black)
+    void* mapped = upload_buf->map();
+    std::memset(mapped, 0, upload_size);
+    upload_buf->unmap();
+    
+    // Upload to GPU
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    CHECK_VULKAN(vkBeginCommandBuffer(command_buffer, &begin_info));
+    
+    // Transition to transfer destination
+    VkImageMemoryBarrier img_barrier = {};
+    img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    img_barrier.image = env_map_texture->image_handle();
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    img_barrier.srcAccessMask = 0;
+    img_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    img_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    img_barrier.subresourceRange.baseMipLevel = 0;
+    img_barrier.subresourceRange.levelCount = 1;
+    img_barrier.subresourceRange.baseArrayLayer = 0;
+    img_barrier.subresourceRange.layerCount = 1;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &img_barrier);
+    
+    // Copy buffer to image
+    VkBufferImageCopy copy_region = {};
+    copy_region.bufferOffset = 0;
+    copy_region.bufferRowLength = 0;
+    copy_region.bufferImageHeight = 0;
+    copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy_region.imageSubresource.mipLevel = 0;
+    copy_region.imageSubresource.baseArrayLayer = 0;
+    copy_region.imageSubresource.layerCount = 1;
+    copy_region.imageOffset = {0, 0, 0};
+    copy_region.imageExtent = {1, 1, 1};
+    
+    vkCmdCopyBufferToImage(command_buffer,
+                           upload_buf->handle(),
+                           env_map_texture->image_handle(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &copy_region);
+    
+    // Transition to shader read
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    img_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    img_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         0, 0, nullptr, 0, nullptr, 1, &img_barrier);
+    
+    CHECK_VULKAN(vkEndCommandBuffer(command_buffer));
+    
+    // Submit and wait
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+    CHECK_VULKAN(vkQueueSubmit(device->graphics_queue(), 1, &submit_info, VK_NULL_HANDLE));
+    CHECK_VULKAN(vkQueueWaitIdle(device->graphics_queue()));
+    
+    vkResetCommandPool(device->logical_device(),
+                       command_pool,
+                       VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+    
+    // Create sampler if not exists
+    if (env_map_sampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo sampler_info = {};
+        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = VK_FILTER_LINEAR;
+        sampler_info.minFilter = VK_FILTER_LINEAR;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.minLod = 0;
+        sampler_info.maxLod = 0;
+        
+        CHECK_VULKAN(vkCreateSampler(device->logical_device(), &sampler_info,
+                                     nullptr, &env_map_sampler));
+    }
+    
+    has_environment = false;
 }

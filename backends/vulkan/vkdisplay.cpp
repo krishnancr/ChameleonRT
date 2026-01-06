@@ -44,7 +44,7 @@ VKDisplay::VKDisplay(SDL_Window *window)
     SDL_version ver;
     SDL_GetVersion(&ver);
     if (ver.major == 2 && ver.minor == 0 && ver.patch < 8) {
-        std::cout << "SDL 2.0.8 or higher is required for the Vulkan display frontend\n";
+        std::cerr << "SDL 2.0.8 or higher is required for the Vulkan display frontend\n";
         throw std::runtime_error(
             "SDL 2.0.8 or higher is required for the Vulkan display frontend");
     }
@@ -343,12 +343,20 @@ void VKDisplay::display(RenderBackend *renderer)
 void VKDisplay::display_native(std::shared_ptr<vkrt::Texture2D> &img)
 {
     uint32_t back_buffer_idx = 0;
-    CHECK_VULKAN(vkAcquireNextImageKHR(device->logical_device(),
-                                       swap_chain,
-                                       std::numeric_limits<uint64_t>::max(),
-                                       img_avail_semaphore,
-                                       VK_NULL_HANDLE,
-                                       &back_buffer_idx));
+    auto acquire_result = vkAcquireNextImageKHR(device->logical_device(),
+                                                swap_chain,
+                                                std::numeric_limits<uint64_t>::max(),
+                                                img_avail_semaphore,
+                                                VK_NULL_HANDLE,
+                                                &back_buffer_idx);
+    
+    // Handle swap chain out of date or suboptimal errors gracefully
+    // These can occur during window resize before SDL sends the resize event
+    if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR || acquire_result == VK_SUBOPTIMAL_KHR) {
+        // Swap chain is out of date, skip this frame - resize will recreate it
+        return;
+    }
+    CHECK_VULKAN(acquire_result);
 
     vkResetCommandPool(
         device->logical_device(), command_pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);

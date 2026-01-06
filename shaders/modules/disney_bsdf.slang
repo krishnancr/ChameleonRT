@@ -35,6 +35,8 @@ struct DisneyMaterial {
 
     float ior;
     float specular_transmission;
+
+    float3 emission;
 };
 
 // Check if two directions are in the same hemisphere relative to normal
