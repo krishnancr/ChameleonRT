@@ -241,16 +241,18 @@ void Scene::load_obj(const std::string &file)
 
     validate_materials();
 
-    // OBJ will not have any lights in it, so just generate one
-    std::cout << "Generating light for OBJ scene\n";
-    QuadLight light;
-    light.emission = glm::vec4(0.f);
-    light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
-    light.position = -10.f * light.normal;
-    ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
-    light.width = 5.f;
-    light.height = 5.f;
-    lights.push_back(light);
+    // Note: Backend requires at least one light for buffer allocation
+    if (lights.empty()) {
+        std::cout << "No lights in scene, adding dummy light (emissive materials/IBL provide actual lighting)\n";
+        QuadLight light;
+        light.emission = glm::vec4(0.f);  // Black/disabled light
+        // light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
+        // light.position = -10.f * light.normal;
+        // ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
+        // light.width = 5.f;
+        // light.height = 5.f;
+        lights.push_back(light);
+    }
 }
 
 void Scene::load_gltf(const std::string &fname)
@@ -427,17 +429,19 @@ void Scene::load_gltf(const std::string &fname)
 
     validate_materials();
 
-    // Does GLTF have lights in the file? If one is missing we should generate one,
-    // otherwise we can load them
-    std::cout << "Generating light for GLTF scene\n";
-    QuadLight light;
-    light.emission = glm::vec4(20.f);
-    light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
-    light.position = -10.f * light.normal;
-    ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
-    light.width = 5.f;
-    light.height = 5.f;
-    lights.push_back(light);
+    // GLTF doesn't have lights in the file, generate a dummy light if needed
+    // Note: Backend requires at least one light for buffer allocation
+    if (lights.empty()) {
+        std::cout << "No lights in scene, adding dummy light (emissive materials/IBL provide actual lighting)\n";
+        QuadLight light;
+        light.emission = glm::vec4(0.f);  // Black/disabled light
+        light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
+        light.position = -10.f * light.normal;
+        ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
+        light.width = 5.f;
+        light.height = 5.f;
+        lights.push_back(light);
+    }
 }
 
 void Scene::load_crts(const std::string &file)
@@ -808,15 +812,20 @@ void Scene::load_pbrt(const std::string &file)
 
     validate_materials();
 
-    std::cout << "Generating light for PBRT scene, TODO Will: Load them from the file\n";
-    QuadLight light;
-    light.emission = glm::vec4(20.f);
-    light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
-    light.position = -10.f * light.normal;
-    ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
-    light.width = 5.f;
-    light.height = 5.f;
-    lights.push_back(light);
+    // TODO: Load lights from PBRT file when parser supports it
+    // For now, only generate a dummy light if no lights exist
+    // Note: Backend requires at least one light for buffer allocation
+    if (lights.empty()) {
+        std::cout << "No lights in scene, adding dummy light (emissive materials/IBL provide actual lighting)\n";
+        QuadLight light;
+        light.emission = glm::vec4(0.f);  // Black/disabled light
+        light.normal = glm::vec4(glm::normalize(glm::vec3(0.5, -0.8, -0.5)), 0);
+        light.position = -10.f * light.normal;
+        ortho_basis(light.v_x, light.v_y, glm::vec3(light.normal));
+        light.width = 5.f;
+        light.height = 5.f;
+        lights.push_back(light);
+    }
 }
 
 uint32_t Scene::load_pbrt_materials(

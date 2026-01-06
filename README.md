@@ -11,7 +11,7 @@ This repository is a fork of Will Usher's [ChameleonRT](https://github.com/Twink
 **Original ChameleonRT:** An example path tracer supporting multiple ray tracing backends (Embree, Embree+SYCL, DXR, OptiX, Vulkan, Metal, OSPRay). This fork maintains compatibility with the original backends while adding Slang integration options for DXR and Vulkan.
 
 The project uses [tinyobjloader](https://github.com/syoyo/tinyobjloader) for OBJ files,
-[tinyexr](https://github.com/syoyo/tinyexr) for hdr enviornment lighting
+[tinyexr](https://github.com/syoyo/tinyexr) for hdr environment lighting
 [tinygltf](https://github.com/syoyo/tinygltf) for glTF files, and optionally
 [pbrt-parser](https://github.com/ingowald/pbrt-parser) for PBRTv3 files.
 Example models (San Miguel, Sponza, Rungholt) are from Morgan McGuire's [Computer Graphics Data Archive](https://casual-effects.com/data/).
