@@ -63,6 +63,7 @@ if(ENABLE_SLANG)
     set_target_properties(slang_compiler_util PROPERTIES
         CXX_STANDARD 17
         CXX_STANDARD_REQUIRED ON
+        POSITION_INDEPENDENT_CODE ON
     )
     
     message(STATUS "Slang shader compiler support enabled")
